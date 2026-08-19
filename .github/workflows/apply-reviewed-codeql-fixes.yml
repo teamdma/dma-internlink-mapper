@@ -1,0 +1,224 @@
+name: Apply reviewed CodeQL fixes
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-reviewed-codeql-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    name: Apply reviewed security patch
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply reviewed patch
+        shell: bash
+        run: |
+          cat > /tmp/codeql-fixes.patch <<'PATCH'
+          diff --git a/admin/js/editor-assistant.js b/admin/js/editor-assistant.js
+          index 6ba87a6..94e4b25 100644
+          --- a/admin/js/editor-assistant.js
+          +++ b/admin/js/editor-assistant.js
+          @@ -87,10 +87,20 @@
+                   return '<a href="'+esc(url)+'">'+esc(anchor)+'</a>';
+               }
+           
+          +
+          +    function inspectionRootFromHtml(html){
+          +        try {
+          +            var parsed=(new window.DOMParser()).parseFromString(String(html||''),'text/html');
+          +            return parsed && parsed.body ? parsed.body : null;
+          +        } catch(e){
+          +            return null;
+          +        }
+          +    }
+          +
+               function replaceTextNodeOnce(html,needle,url){
+                   if(!html || !needle || /<a\b[^>]*>[\s\S]*?$/i.test('')){ return null; }
+          -        var wrap=document.createElement('div');
+          -        wrap.innerHTML=String(html);
+          +        var wrap=inspectionRootFromHtml(html);
+          +        if(!wrap){ return null; }
+                   var walker=document.createTreeWalker(wrap,NodeFilter.SHOW_TEXT,null);
+                   var node;
+                   while((node=walker.nextNode())){
+          @@ -194,8 +204,8 @@
+           
+               function exactAnchorInHtml(html,needle){
+                   if(!html || !needle){ return ''; }
+          -        var wrap=document.createElement('div');
+          -        wrap.innerHTML=String(html);
+          +        var wrap=inspectionRootFromHtml(html);
+          +        if(!wrap){ return ''; }
+                   var walker=document.createTreeWalker(wrap,NodeFilter.SHOW_TEXT,null), node;
+                   var lowerNeedle=String(needle).toLocaleLowerCase();
+                   while((node=walker.nextNode())){
+          @@ -224,16 +234,16 @@
+               }
+           
+               function textFromSafeHtml(html){
+          -        var wrap=document.createElement('div');
+          -        wrap.innerHTML=String(html||'');
+          +        var wrap=inspectionRootFromHtml(html);
+          +        if(!wrap){ return ''; }
+                   var unsafe=wrap.querySelectorAll('h1,h2,h3,h4,h5,h6,figure,figcaption,picture,img,svg,canvas,button,nav,code,pre,script,style,form,a');
+                   for(var i=0;i<unsafe.length;i++){ unsafe[i].remove(); }
+                   return String(wrap.textContent||'').replace(/\s+/g,' ').trim();
+               }
+           
+               function wordTextFromContextHtml(html){
+          -        var wrap=document.createElement('div');
+          -        wrap.innerHTML=String(html||'');
+          +        var wrap=inspectionRootFromHtml(html);
+          +        if(!wrap){ return ''; }
+                   var unsafe=wrap.querySelectorAll('h1,h2,h3,h4,h5,h6,figure,figcaption,picture,img,svg,canvas,button,nav,code,pre,script,style,form');
+                   for(var i=0;i<unsafe.length;i++){ unsafe[i].remove(); }
+                   return String(wrap.textContent||'').replace(/\s+/g,' ').trim();
+          @@ -246,8 +256,8 @@
+                   function inspectHtml(html,clientId,attribute){
+                       html=String(html||'');
+                       if(!html){ return; }
+          -            var wrap=document.createElement('div');
+          -            wrap.innerHTML=html;
+          +            var wrap=inspectionRootFromHtml(html);
+          +            if(!wrap){ return; }
+                       var links=wrap.querySelectorAll('a[href]');
+                       for(var i=0;i<links.length;i++){
+                           var normalized=normalizeUrl(links[i].getAttribute('href'));
+          @@ -372,8 +382,8 @@
+                   if(!location || !(window.wp && wp.data)){ return false; }
+                   var block=wp.data.select('core/block-editor').getBlock(location.clientId);
+                   if(!block || !block.attributes){ return false; }
+          -        var html=attributeHtml(block.attributes[location.key]),wrap=document.createElement('div');
+          -        wrap.innerHTML=html;
+          +        var html=attributeHtml(block.attributes[location.key]),wrap=inspectionRootFromHtml(html);
+          +        if(!wrap){ return false; }
+                   var links=wrap.querySelectorAll('a[href]');
+                   for(var i=0;i<links.length;i++){
+                       if(normalizeUrl(links[i].getAttribute('href'))===normalizeUrl(url) && String(links[i].textContent||'').trim().toLocaleLowerCase()===String(anchor).trim().toLocaleLowerCase()){
+          @@ -436,9 +446,10 @@
+               }
+           
+               function serializedContentContainsLink(url,anchor){
+          -        var html=getEditedPostContent(),wrap=document.createElement('div');
+          -        // Strip Gutenberg comments before DOM inspection; saved HTML remains intact.
+          -        wrap.innerHTML=String(html||'').replace(/<!--\/?wp:[\s\S]*?-->/g,'');
+          +        var html=String(getEditedPostContent()||'').replace(/<!--\/?wp:[\s\S]*?-->/g,'');
+          +        // Parse serialized content in an inert document before inspection.
+          +        var wrap=inspectionRootFromHtml(html);
+          +        if(!wrap){ return false; }
+                   var links=wrap.querySelectorAll('a[href]');
+                   for(var i=0;i<links.length;i++){
+                       if(normalizeUrl(links[i].getAttribute('href'))===normalizeUrl(url) && String(links[i].textContent||'').trim().toLocaleLowerCase()===String(anchor).trim().toLocaleLowerCase()){
+          diff --git a/admin/js/elementor-assistant.js b/admin/js/elementor-assistant.js
+          index 02c4816..a0b3919 100644
+          --- a/admin/js/elementor-assistant.js
+          +++ b/admin/js/elementor-assistant.js
+          @@ -447,6 +447,19 @@
+                   }
+               }
+           
+          +
+          +    function previewElementByDataId(doc, elementId) {
+          +        if (!doc || !doc.body || !elementId) { return null; }
+          +        var expectedId = String(elementId);
+          +        var candidates = doc.querySelectorAll('[data-id]');
+          +        for (var i = 0; i < candidates.length; i++) {
+          +            if (String(candidates[i].getAttribute('data-id') || '') === expectedId) {
+          +                return candidates[i];
+          +            }
+          +        }
+          +        return null;
+          +    }
+          +
+               function getElementorContainer(elementId) {
+                   try {
+                       if (window.elementor && typeof elementor.getContainer === 'function') {
+          @@ -462,8 +475,7 @@
+                   var target = null;
+           
+                   if (doc && doc.body && elementId) {
+          -            var safeId = String(elementId).replace(/"/g, '\\"');
+          -            target = doc.querySelector('[data-id="' + safeId + '"]');
+          +            target = previewElementByDataId(doc, elementId);
+                       if (target) {
+                           target.scrollIntoView({behavior: 'smooth', block: 'center'});
+                           var previousOutline = target.style.outline;
+          @@ -539,8 +551,7 @@
+               function renderedWidgetHasLink(elementId, targetUrl) {
+                   var doc = previewDocument();
+                   if (!doc || !doc.body || !elementId || !targetUrl) { return false; }
+          -        var safeId = String(elementId).replace(/"/g, '\\"');
+          -        var widget = doc.querySelector('[data-id="' + safeId + '"]');
+          +        var widget = previewElementByDataId(doc, elementId);
+                   if (!widget) { return false; }
+                   var links = widget.querySelectorAll('a[href]');
+                   for (var i = 0; i < links.length; i++) {
+          diff --git a/admin/js/map-interactions.js b/admin/js/map-interactions.js
+          index 454b16c..c76f8b5 100644
+          --- a/admin/js/map-interactions.js
+          +++ b/admin/js/map-interactions.js
+          @@ -195,7 +195,7 @@ ready(function(){
+             function graphPoint(ev){var rect=canvas.getBoundingClientRect();return{x:(ev.clientX-rect.left-state.x)/state.scale,y:(ev.clientY-rect.top-state.y)/state.scale};}
+             function hit(ev){var p=graphPoint(ev),best=null,dist=1e9;state.nodes.forEach(function(n){var dx=n.x-p.x,dy=n.y-p.y,d=Math.sqrt(dx*dx+dy*dy);if(d<nodeRadius(n)+7&&d<dist){best=n;dist=d;}});return best;}
+             function updateMetrics(){var m=state.data&&state.data.meta&&state.data.meta.totals?state.data.meta.totals:{};panel.querySelector('.ilsm-knowledge-metrics').innerHTML='<div class="ilsm-knowledge-stat"><span>'+esc(ilsmMapT('indexedPages','Indexed pages'))+'</span><strong>'+esc(m.total_pages||state.nodes.length)+'</strong></div><div class="ilsm-knowledge-stat"><span>'+esc(ilsmMapT('internalLinks','Internal links'))+'</span><strong>'+esc(m.total_internal_links||state.edges.length)+'</strong></div><div class="ilsm-knowledge-stat"><span>'+esc(ilsmMapT('orphanPages','Orphan pages'))+'</span><strong>'+esc(m.orphan_pages||0)+'</strong></div><div class="ilsm-knowledge-stat"><span>'+esc(ilsmMapT('architectureHealth','Architecture health'))+'</span><strong>'+esc(m.architecture_score||0)+'/100</strong></div>';}
+          -  function select(n){renderSelectedLinks(n);state.selected=n?n.id:0;if(keyboardNode){keyboardNode.value=n?String(n.id):'';}render();var box=panel.querySelector('.ilsm-knowledge-details');if(!n){box.innerHTML='<p class="ilsm-muted">'+esc(ilsmMapT('selectNodeHelp','Select a node to see its relationships and SEO signals.'))+'</p>';return;}var incoming=state.edges.filter(function(e){return e.target===n.id;}).length,outgoing=state.edges.filter(function(e){return e.source===n.id;}).length;var map='admin.php?page=ilsm-visual-map&view=link-map&post_id='+encodeURIComponent(n.id),opps='admin.php?page=ilsm-link-opportunities&source_post_id='+encodeURIComponent(n.id);box.innerHTML='<span class="ilsm-badge '+(n.is_orphan?'is-warning':'is-success')+'">'+(n.is_orphan?ilsmMapT('orphan','Orphan'):ilsmMapT('connected','Connected'))+'</span><h3>'+esc(n.title)+'</h3><p class="ilsm-muted">'+esc(n.path||n.url)+'</p><div class="ilsm-knowledge-detail-grid"><span><small>'+esc(ilsmMapT('seoScore','SEO score'))+'</small><b>'+esc(n.seo_score||0)+'/100</b></span><span><small>'+esc(ilsmMapT('incoming','Incoming'))+'</small><b>'+esc(n.incoming_count||incoming)+'</b></span><span><small>'+esc(ilsmMapT('outgoing','Outgoing'))+'</small><b>'+esc(n.outgoing_count||outgoing)+'</b></span><span><small>'+esc(ilsmMapT('authority','Authority'))+'</small><b>'+esc(n.authority_score||0)+'</b></span></div><div class="ilsm-drawer-actions"><a class="ilsm-btn ilsm-btn-primary" href="'+esc(map)+'"><i class="fa fa-sitemap"></i> '+esc(ilsmMapT('pageInsights','Page Insights'))+'</a><a class="ilsm-btn" href="'+esc(opps)+'"><i class="fa fa-link"></i> '+esc(ilsmMapT('opportunities','Opportunities'))+'</a><a class="ilsm-btn" href="'+esc(n.url)+'" target="_blank" rel="noopener"><i class="fa fa-external-link"></i> '+esc(ilsmMapT('viewPage','View page'))+'</a></div>';var exportPage=panel.querySelector('.ilsm-kg-export-card.is-page');if(exportPage){var base=exportPage.getAttribute('data-page-export-base')||'';exportPage.href=base+(base.indexOf('?')===-1?'?':'&')+'post_id='+encodeURIComponent(n.id);exportPage.classList.remove('is-disabled');exportPage.setAttribute('aria-disabled','false');var copy=exportPage.querySelector('.ilsm-kg-export-page-copy');if(copy){copy.textContent=ilsmMapFmt('exportPageRelationships','Export %s with every scanned incoming and outgoing relationship for this completed scan.',n.title);}}var obsidian=panel.querySelector('.ilsm-visual-export-obsidian');if(obsidian){var obase=obsidian.getAttribute('data-ilsm-obsidian-base')||obsidian.href||'';try{var ourl=new URL(obase,window.location.href);ourl.searchParams.set('post_id',n.id);obsidian.href=ourl.toString();obsidian.setAttribute('data-ilsm-selected-post-id',n.id);}catch(e){}}live.textContent=ilsmMapFmt('selectedPage','Selected %s',n.title);}
+          +  function select(n){renderSelectedLinks(n);state.selected=n?n.id:0;if(keyboardNode){keyboardNode.value=n?String(n.id):'';}render();var box=panel.querySelector('.ilsm-knowledge-details');if(!n){box.innerHTML='<p class="ilsm-muted">'+esc(ilsmMapT('selectNodeHelp','Select a node to see its relationships and SEO signals.'))+'</p>';return;}var incoming=state.edges.filter(function(e){return e.target===n.id;}).length,outgoing=state.edges.filter(function(e){return e.source===n.id;}).length;var map='admin.php?page=ilsm-visual-map&view=link-map&post_id='+encodeURIComponent(n.id),opps='admin.php?page=ilsm-link-opportunities&source_post_id='+encodeURIComponent(n.id);box.innerHTML='<span class="ilsm-badge '+(n.is_orphan?'is-warning':'is-success')+'">'+(n.is_orphan?ilsmMapT('orphan','Orphan'):ilsmMapT('connected','Connected'))+'</span><h3>'+esc(n.title)+'</h3><p class="ilsm-muted">'+esc(n.path||n.url)+'</p><div class="ilsm-knowledge-detail-grid"><span><small>'+esc(ilsmMapT('seoScore','SEO score'))+'</small><b>'+esc(n.seo_score||0)+'/100</b></span><span><small>'+esc(ilsmMapT('incoming','Incoming'))+'</small><b>'+esc(n.incoming_count||incoming)+'</b></span><span><small>'+esc(ilsmMapT('outgoing','Outgoing'))+'</small><b>'+esc(n.outgoing_count||outgoing)+'</b></span><span><small>'+esc(ilsmMapT('authority','Authority'))+'</small><b>'+esc(n.authority_score||0)+'</b></span></div><div class="ilsm-drawer-actions"><a class="ilsm-btn ilsm-btn-primary" href="'+esc(map)+'"><i class="fa fa-sitemap"></i> '+esc(ilsmMapT('pageInsights','Page Insights'))+'</a><a class="ilsm-btn" href="'+esc(opps)+'"><i class="fa fa-link"></i> '+esc(ilsmMapT('opportunities','Opportunities'))+'</a><a class="ilsm-btn" href="'+esc(n.url)+'" target="_blank" rel="noopener"><i class="fa fa-external-link"></i> '+esc(ilsmMapT('viewPage','View page'))+'</a></div>';var exportPage=panel.querySelector('.ilsm-kg-export-card.is-page');if(exportPage){var base=(window.ILSM&&ILSM.knowledgePageExportBase)?String(ILSM.knowledgePageExportBase):'';try{var exportUrl=new URL(base,window.location.href);if(exportUrl.origin!==window.location.origin||!/\/wp-admin\/admin-post\.php$/.test(exportUrl.pathname)||exportUrl.searchParams.get('action')!=='ilsm_export_knowledge_pdf'){throw new Error('Invalid export URL');}exportUrl.searchParams.set('post_id',String(n.id));exportPage.href=exportUrl.toString();exportPage.classList.remove('is-disabled');exportPage.setAttribute('aria-disabled','false');}catch(e){exportPage.removeAttribute('href');exportPage.classList.add('is-disabled');exportPage.setAttribute('aria-disabled','true');}var copy=exportPage.querySelector('.ilsm-kg-export-page-copy');if(copy){copy.textContent=ilsmMapFmt('exportPageRelationships','Export %s with every scanned incoming and outgoing relationship for this completed scan.',n.title);}}var obsidian=panel.querySelector('.ilsm-visual-export-obsidian');if(obsidian){var obase=obsidian.getAttribute('data-ilsm-obsidian-base')||obsidian.href||'';try{var ourl=new URL(obase,window.location.href);ourl.searchParams.set('post_id',n.id);obsidian.href=ourl.toString();obsidian.setAttribute('data-ilsm-selected-post-id',n.id);}catch(e){}}live.textContent=ilsmMapFmt('selectedPage','Selected %s',n.title);}
+             if(keyboardNode){keyboardNode.addEventListener('change',function(){var id=String(keyboardNode.value||''),n=state.nodeMap[id]||state.nodeMap[Number(id)]||null;if(n){select(n);centerSelectedNode(n);}else{select(null);}});}
+             canvas.addEventListener('pointerdown',function(ev){var n=hit(ev);state.lastX=ev.clientX;state.lastY=ev.clientY;if(n){state.dragNode=n;select(n);}else{state.panning=true;}try{canvas.setPointerCapture(ev.pointerId);}catch(e){}});
+             canvas.addEventListener('pointermove',function(ev){var n=hit(ev);state.hovered=n?n.id:0;canvas.style.cursor=state.dragNode?'grabbing':(n?'pointer':(state.panning?'grabbing':'grab'));if(state.dragNode){var p=graphPoint(ev);state.dragNode.x=p.x;state.dragNode.y=p.y;render();}else if(state.panning){state.x+=ev.clientX-state.lastX;state.y+=ev.clientY-state.lastY;state.lastX=ev.clientX;state.lastY=ev.clientY;render();}else{render();}});
+          diff --git a/includes/class-ilsm-admin-assets.php b/includes/class-ilsm-admin-assets.php
+          index 888b953..a583bfc 100644
+          --- a/includes/class-ilsm-admin-assets.php
+          +++ b/includes/class-ilsm-admin-assets.php
+          @@ -50,6 +50,7 @@ final class ILSM_Admin_Assets {
+                       'brokenNonce' => wp_create_nonce( 'ilsm_broken_links' ),
+                       'visualPdfUrl' => admin_url( 'admin-post.php' ),
+                       'visualPdfNonce' => wp_create_nonce( 'ilsm_export_visual_pdf' ),
+          +            'knowledgePageExportBase' => wp_nonce_url( admin_url( 'admin-post.php?action=ilsm_export_knowledge_pdf&scope=page' ), 'ilsm_export_knowledge_pdf' ),
+                       'defaultTheme' => in_array( (string) ( $settings['admin_theme'] ?? 'dark' ), array( 'dark', 'light', 'system' ), true ) ? (string) ( $settings['admin_theme'] ?? 'dark' ) : 'dark',
+                       'delay'     => (int) ( $settings['batch_delay'] ?? 350 ),
+                       'currentScan' => $current_scan ?: null,
+          PATCH
+
+          # Remove the YAML indentation that is only present to keep the heredoc readable.
+          sed -i 's/^          //' /tmp/codeql-fixes.patch
+          git apply --check /tmp/codeql-fixes.patch
+          git apply /tmp/codeql-fixes.patch
+
+      - name: Validate patched files
+        shell: bash
+        run: |
+          node --check admin/js/editor-assistant.js
+          node --check admin/js/elementor-assistant.js
+          node --check admin/js/map-interactions.js
+          php -l includes/class-ilsm-admin-assets.php
+          php tools/security-invariants.php
+          ! grep -F 'String(elementId).replace(/"/g' admin/js/elementor-assistant.js
+          grep -F 'new window.DOMParser()' admin/js/editor-assistant.js
+          grep -F 'knowledgePageExportBase' includes/class-ilsm-admin-assets.php
+          grep -F 'ILSM.knowledgePageExportBase' admin/js/map-interactions.js
+          git diff --check
+
+      - name: Commit reviewed fixes
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add admin/js/editor-assistant.js admin/js/elementor-assistant.js admin/js/map-interactions.js includes/class-ilsm-admin-assets.php
+          git commit -m 'Fix CodeQL security findings'
+          git push origin HEAD:main
