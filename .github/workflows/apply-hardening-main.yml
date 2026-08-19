@@ -60,3 +60,5 @@ jobs:
           git add -A
           git commit -m "Sync final WordPress review hardening"
           git push origin HEAD:main
+
+# retrigger after payload repair
