@@ -22,9 +22,22 @@ jobs:
           fetch-depth: 0
 
       - name: Rebuild reviewed patch
+        shell: bash
         run: |
-          cat .github/wp-hardening/part* > /tmp/wp-review-hardening.patch.gz.b64
-          base64 -d /tmp/wp-review-hardening.patch.gz.b64 | gzip -d > /tmp/wp-review-hardening.patch
+          # part00 was accidentally uploaded with 2,000 duplicated bytes from part01.
+          # Keep the original 8,000-byte first chunk, then append the remaining chunks.
+          head -c 8000 .github/wp-hardening/part00 > /tmp/wp-review-hardening.patch.gz.b64
+          cat .github/wp-hardening/part01 \
+              .github/wp-hardening/part02 \
+              .github/wp-hardening/part03 \
+              .github/wp-hardening/part04 \
+              .github/wp-hardening/part05 \
+              .github/wp-hardening/part06 \
+              .github/wp-hardening/part07 >> /tmp/wp-review-hardening.patch.gz.b64
+
+          base64 --decode /tmp/wp-review-hardening.patch.gz.b64 > /tmp/wp-review-hardening.patch.gz
+          gzip -t /tmp/wp-review-hardening.patch.gz
+          gzip -dc /tmp/wp-review-hardening.patch.gz > /tmp/wp-review-hardening.patch
           git apply --check /tmp/wp-review-hardening.patch
           git apply /tmp/wp-review-hardening.patch
 
