@@ -1,0 +1,14 @@
+Font Awesome 4.7.0
+Copyright (c) Dave Gandy
+
+The Font Awesome font files are licensed under the SIL Open Font License 1.1:
+https://scripts.sil.org/OFL
+
+The Font Awesome CSS files are licensed under the MIT License:
+https://opensource.org/licenses/MIT
+
+The Font Awesome documentation is licensed under CC BY 3.0:
+https://creativecommons.org/licenses/by/3.0/
+
+Source and complete licensing details:
+https://fontawesome.com/v4/license/
