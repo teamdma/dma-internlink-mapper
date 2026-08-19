@@ -447,6 +447,19 @@
         }
     }
 
+
+    function previewElementByDataId(doc, elementId) {
+        if (!doc || !doc.body || !elementId) { return null; }
+        var expectedId = String(elementId);
+        var candidates = doc.querySelectorAll('[data-id]');
+        for (var i = 0; i < candidates.length; i++) {
+            if (String(candidates[i].getAttribute('data-id') || '') === expectedId) {
+                return candidates[i];
+            }
+        }
+        return null;
+    }
+
     function getElementorContainer(elementId) {
         try {
             if (window.elementor && typeof elementor.getContainer === 'function') {
@@ -462,8 +475,7 @@
         var target = null;
 
         if (doc && doc.body && elementId) {
-            var safeId = String(elementId).replace(/"/g, '\\"');
-            target = doc.querySelector('[data-id="' + safeId + '"]');
+            target = previewElementByDataId(doc, elementId);
             if (target) {
                 target.scrollIntoView({behavior: 'smooth', block: 'center'});
                 var previousOutline = target.style.outline;
@@ -539,8 +551,7 @@
     function renderedWidgetHasLink(elementId, targetUrl) {
         var doc = previewDocument();
         if (!doc || !doc.body || !elementId || !targetUrl) { return false; }
-        var safeId = String(elementId).replace(/"/g, '\\"');
-        var widget = doc.querySelector('[data-id="' + safeId + '"]');
+        var widget = previewElementByDataId(doc, elementId);
         if (!widget) { return false; }
         var links = widget.querySelectorAll('a[href]');
         for (var i = 0; i < links.length; i++) {

@@ -50,6 +50,7 @@ final class ILSM_Admin_Assets {
             'brokenNonce' => wp_create_nonce( 'ilsm_broken_links' ),
             'visualPdfUrl' => admin_url( 'admin-post.php' ),
             'visualPdfNonce' => wp_create_nonce( 'ilsm_export_visual_pdf' ),
+            'knowledgePageExportBase' => wp_nonce_url( admin_url( 'admin-post.php?action=ilsm_export_knowledge_pdf&scope=page' ), 'ilsm_export_knowledge_pdf' ),
             'defaultTheme' => in_array( (string) ( $settings['admin_theme'] ?? 'dark' ), array( 'dark', 'light', 'system' ), true ) ? (string) ( $settings['admin_theme'] ?? 'dark' ) : 'dark',
             'delay'     => (int) ( $settings['batch_delay'] ?? 350 ),
             'currentScan' => $current_scan ?: null,

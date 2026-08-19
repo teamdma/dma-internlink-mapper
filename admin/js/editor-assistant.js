@@ -87,10 +87,20 @@
         return '<a href="'+esc(url)+'">'+esc(anchor)+'</a>';
     }
 
+
+    function inspectionRootFromHtml(html){
+        try {
+            var parsed=(new window.DOMParser()).parseFromString(String(html||''),'text/html');
+            return parsed && parsed.body ? parsed.body : null;
+        } catch(e){
+            return null;
+        }
+    }
+
     function replaceTextNodeOnce(html,needle,url){
         if(!html || !needle || /<a\b[^>]*>[\s\S]*?$/i.test('')){ return null; }
-        var wrap=document.createElement('div');
-        wrap.innerHTML=String(html);
+        var wrap=inspectionRootFromHtml(html);
+        if(!wrap){ return null; }
         var walker=document.createTreeWalker(wrap,NodeFilter.SHOW_TEXT,null);
         var node;
         while((node=walker.nextNode())){
@@ -194,8 +204,8 @@
 
     function exactAnchorInHtml(html,needle){
         if(!html || !needle){ return ''; }
-        var wrap=document.createElement('div');
-        wrap.innerHTML=String(html);
+        var wrap=inspectionRootFromHtml(html);
+        if(!wrap){ return ''; }
         var walker=document.createTreeWalker(wrap,NodeFilter.SHOW_TEXT,null), node;
         var lowerNeedle=String(needle).toLocaleLowerCase();
         while((node=walker.nextNode())){
@@ -224,16 +234,16 @@
     }
 
     function textFromSafeHtml(html){
-        var wrap=document.createElement('div');
-        wrap.innerHTML=String(html||'');
+        var wrap=inspectionRootFromHtml(html);
+        if(!wrap){ return ''; }
         var unsafe=wrap.querySelectorAll('h1,h2,h3,h4,h5,h6,figure,figcaption,picture,img,svg,canvas,button,nav,code,pre,script,style,form,a');
         for(var i=0;i<unsafe.length;i++){ unsafe[i].remove(); }
         return String(wrap.textContent||'').replace(/\s+/g,' ').trim();
     }
 
     function wordTextFromContextHtml(html){
-        var wrap=document.createElement('div');
-        wrap.innerHTML=String(html||'');
+        var wrap=inspectionRootFromHtml(html);
+        if(!wrap){ return ''; }
         var unsafe=wrap.querySelectorAll('h1,h2,h3,h4,h5,h6,figure,figcaption,picture,img,svg,canvas,button,nav,code,pre,script,style,form');
         for(var i=0;i<unsafe.length;i++){ unsafe[i].remove(); }
         return String(wrap.textContent||'').replace(/\s+/g,' ').trim();
@@ -246,8 +256,8 @@
         function inspectHtml(html,clientId,attribute){
             html=String(html||'');
             if(!html){ return; }
-            var wrap=document.createElement('div');
-            wrap.innerHTML=html;
+            var wrap=inspectionRootFromHtml(html);
+            if(!wrap){ return; }
             var links=wrap.querySelectorAll('a[href]');
             for(var i=0;i<links.length;i++){
                 var normalized=normalizeUrl(links[i].getAttribute('href'));
@@ -372,8 +382,8 @@
         if(!location || !(window.wp && wp.data)){ return false; }
         var block=wp.data.select('core/block-editor').getBlock(location.clientId);
         if(!block || !block.attributes){ return false; }
-        var html=attributeHtml(block.attributes[location.key]),wrap=document.createElement('div');
-        wrap.innerHTML=html;
+        var html=attributeHtml(block.attributes[location.key]),wrap=inspectionRootFromHtml(html);
+        if(!wrap){ return false; }
         var links=wrap.querySelectorAll('a[href]');
         for(var i=0;i<links.length;i++){
             if(normalizeUrl(links[i].getAttribute('href'))===normalizeUrl(url) && String(links[i].textContent||'').trim().toLocaleLowerCase()===String(anchor).trim().toLocaleLowerCase()){
@@ -436,9 +446,10 @@
     }
 
     function serializedContentContainsLink(url,anchor){
-        var html=getEditedPostContent(),wrap=document.createElement('div');
-        // Strip Gutenberg comments before DOM inspection; saved HTML remains intact.
-        wrap.innerHTML=String(html||'').replace(/<!--\/?wp:[\s\S]*?-->/g,'');
+        var html=String(getEditedPostContent()||'').replace(/<!--\/?wp:[\s\S]*?-->/g,'');
+        // Parse serialized content in an inert document before inspection.
+        var wrap=inspectionRootFromHtml(html);
+        if(!wrap){ return false; }
         var links=wrap.querySelectorAll('a[href]');
         for(var i=0;i<links.length;i++){
             if(normalizeUrl(links[i].getAttribute('href'))===normalizeUrl(url) && String(links[i].textContent||'').trim().toLocaleLowerCase()===String(anchor).trim().toLocaleLowerCase()){
