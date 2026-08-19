@@ -1,0 +1,75 @@
+name: Quality and security
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  php:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["7.4", "8.4"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+          extensions: dom, mbstring, xml, xmlreader
+
+      - name: Validate Composer metadata
+        run: composer validate --strict --no-check-publish
+
+      - name: Install development dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: PHP syntax
+        run: composer lint:php
+
+      - name: Security invariants
+        run: composer audit:security
+
+      - name: Unit tests
+        run: composer test
+
+      - name: WordPress security sniffs
+        run: composer phpcs:security
+
+      - name: PHP compatibility
+        run: composer phpcs:compat
+
+  javascript:
+    name: JavaScript syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          check-latest: true
+
+      - name: JavaScript syntax
+        run: node tools/js-syntax.mjs
