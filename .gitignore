@@ -1,0 +1,9 @@
+/vendor/
+/.phpunit.result.cache
+/coverage/
+/build/
+*.zip
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
