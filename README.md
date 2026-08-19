@@ -1,5 +1,7 @@
 # DMA InternLink Mapper
 
+[![Quality and security](https://github.com/teamdma/dma-internlink-mapper/actions/workflows/quality.yml/badge.svg)](https://github.com/teamdma/dma-internlink-mapper/actions/workflows/quality.yml)
+
 DMA InternLink Mapper is a WordPress plugin for understanding and improving a site's internal link structure.
 
 It scans links, finds orphan pages and link opportunities, checks anchors and broken links, and includes visual 2D/3D maps to make larger sites easier to understand.
