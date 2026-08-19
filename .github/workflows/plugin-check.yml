@@ -1,0 +1,33 @@
+name: WordPress Plugin Check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin-check:
+    name: Plugin Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build production plugin
+        run: |
+          mkdir -p build
+          git archive --format=tar --prefix=dma-internlink-mapper/ HEAD | tar -x -C build
+
+      - name: Run WordPress Plugin Check
+        uses: wordpress/plugin-check-action@v1
+        with:
+          build-dir: './build/dma-internlink-mapper'
