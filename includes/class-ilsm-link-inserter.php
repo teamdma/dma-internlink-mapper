@@ -591,7 +591,7 @@ class ILSM_Link_Inserter {
         return true;
     }
 
-    private function locate( $o, $for_insert ) {
+    private function locate( $o, $_for_insert ) {
         $post = get_post( $o->source_post_id );
         $url = get_permalink( $o->target_post_id );
         if ( ! $post || ! $url ) { return new WP_Error( 'invalid_content', __( 'Source content or destination URL is unavailable.', 'dma-internlink-mapper' ) ); }

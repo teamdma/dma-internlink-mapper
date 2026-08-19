@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<ruleset name="DMA InternLink Mapper security baseline">
+  <description>Security-focused WordPressCS checks. Formatting is tightened incrementally to keep review diffs readable.</description>
+
+  <arg name="basepath" value="."/>
+  <arg name="colors"/>
+  <arg name="extensions" value="php"/>
+  <arg value="sp"/>
+
+  <file>dma-internlink-mapper.php</file>
+  <file>includes</file>
+  <file>uninstall.php</file>
+
+  <exclude-pattern>vendor/*</exclude-pattern>
+  <exclude-pattern>tests/*</exclude-pattern>
+  <exclude-pattern>tools/*</exclude-pattern>
+
+  <rule ref="WordPress.Security.EscapeOutput"/>
+  <rule ref="WordPress.Security.NonceVerification"/>
+  <rule ref="WordPress.Security.ValidatedSanitizedInput"/>
+  <rule ref="WordPress.DB.PreparedSQL"/>
+  <rule ref="WordPress.DB.PreparedSQLPlaceholders"/>
+</ruleset>

@@ -263,7 +263,7 @@ final class ILSM_Content_Extractor {
         }
     }
 
-    private static function nearest_anchor_text( $settings, $link_key ) {
+    private static function nearest_anchor_text( $settings, $_link_key ) {
         $preferred = array( 'text', 'title', 'button_text', 'link_text', 'description', 'editor', 'heading', 'label' );
         foreach ( $preferred as $key ) {
             if ( isset( $settings[ $key ] ) && is_string( $settings[ $key ] ) && '' !== trim( wp_strip_all_tags( $settings[ $key ] ) ) ) {

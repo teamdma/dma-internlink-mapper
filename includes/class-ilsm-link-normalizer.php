@@ -75,16 +75,44 @@ class ILSM_Link_Normalizer {
      */
     public static function is_internal( $url ) {
         $parts = wp_parse_url( (string) $url );
-        if ( ! is_array( $parts ) || empty( $parts['host'] ) ) { return false; }
+        if ( ! is_array( $parts ) || empty( $parts['host'] ) || ! empty( $parts['user'] ) || ! empty( $parts['pass'] ) ) { return false; }
+
+        $home_scheme = strtolower( (string) wp_parse_url( home_url( '/' ), PHP_URL_SCHEME ) );
+        $scheme      = strtolower( (string) ( $parts['scheme'] ?? $home_scheme ) );
+        if ( ! in_array( $scheme, array( 'http', 'https' ), true ) ) { return false; }
+
         $candidate = self::canonical_site_host( $parts['host'] );
         if ( '' === $candidate ) { return false; }
+
+        $candidate_port = self::effective_port( $parts, $scheme );
+        $explicit_port  = isset( $parts['port'] );
+        $default_port   = 'https' === $scheme ? 443 : 80;
+
         foreach ( array( home_url( '/' ), site_url( '/' ) ) as $site_url ) {
             $site = wp_parse_url( $site_url );
-            if ( is_array( $site ) && ! empty( $site['host'] ) && hash_equals( self::canonical_site_host( $site['host'] ), $candidate ) ) {
+            if ( ! is_array( $site ) || empty( $site['host'] ) || ! hash_equals( self::canonical_site_host( $site['host'] ), $candidate ) ) {
+                continue;
+            }
+
+            if ( ! $explicit_port ) {
+                return true;
+            }
+
+            $site_scheme = strtolower( (string) ( $site['scheme'] ?? $home_scheme ) );
+            $site_port   = self::effective_port( $site, $site_scheme );
+            if ( $candidate_port === $default_port || $candidate_port === $site_port ) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** Return the explicit port, or the standard port for the URL scheme. */
+    private static function effective_port( array $parts, $scheme ) {
+        if ( isset( $parts['port'] ) ) {
+            return absint( $parts['port'] );
+        }
+        return 'https' === strtolower( (string) $scheme ) ? 443 : 80;
     }
 
     /** Canonicalize only case, a terminal dot, and one conventional www alias. */

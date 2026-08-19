@@ -4,7 +4,7 @@ Tags: internal links, seo, link audit, orphan pages, link suggestions
 Requires at least: 6.5
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -112,6 +112,13 @@ https://wordpress.org/plugins/dma-internlink-mapper/
 5. Health Audit and database tools.
 
 == Changelog ==
+
+= 1.0.1 =
+
+* Hardened internal URL classification for HTTP(S) links and explicit non-standard ports.
+* Added regression tests and repository security/compatibility checks for development.
+* Added GitHub CI, dependency update configuration, and consistent editor settings.
+* Corrected release metadata and development hygiene without changing scan or insertion behavior.
 
 = 1.0.0 =
 
