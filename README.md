@@ -2,37 +2,51 @@
 
 [![Quality and security](https://github.com/teamdma/dma-internlink-mapper/actions/workflows/quality.yml/badge.svg)](https://github.com/teamdma/dma-internlink-mapper/actions/workflows/quality.yml)
 
-DMA InternLink Mapper is a WordPress plugin for understanding and improving a site's internal link structure.
+**DMA InternLink Mapper** is a WordPress internal linking and technical SEO plugin for analyzing site structure, finding orphan pages, discovering internal link opportunities, reviewing anchor text, and checking broken or external links.
 
-It scans links, finds orphan pages and link opportunities, checks anchors and broken links, and includes visual 2D/3D maps to make larger sites easier to understand.
+It helps WordPress site owners understand how pages connect through visual 2D/3D link maps and a Knowledge Graph, while keeping the core analysis inside WordPress.
 
-## Main features
+## WordPress internal linking and SEO features
 
-* Internal link scanner and reports
-* Link opportunities with preview, validation and undo
-* Orphan page and anchor analysis
-* Broken and external link tools
-* Visual maps and Knowledge Graph
-* On-page SEO checks
-* Search Console CSV/ZIP import
-* Classic Editor, Gutenberg and Elementor support
+- Internal link scanner and link reports
+- Internal link opportunities with preview, validation and undo
+- Orphan page detection
+- Anchor text analysis
+- Broken link checking and repair tools
+- External link analysis
+- Visual 2D/3D internal link maps
+- Knowledge Graph for site structure
+- On-page SEO checks
+- Search Console CSV/ZIP import
+- Classic Editor, Gutenberg and Elementor support
 
-Core analysis runs inside WordPress. External link checking is optional.
+External destination checking is optional.
+
+## What DMA InternLink Mapper helps you find
+
+The plugin is designed for common WordPress SEO and site-architecture tasks, including:
+
+- pages with too few or no internal links
+- useful internal linking opportunities between related content
+- broken internal and external links
+- repeated or weak anchor text patterns
+- important pages that are difficult to reach through the current link structure
+- large-site relationships that are easier to understand visually than in a spreadsheet
 
 ## Requirements
 
-* WordPress 6.5+
-* PHP 7.4+
+- WordPress 6.5+
+- PHP 7.4+
 
 ## Documentation
 
-Full documentation:
+Full documentation and usage guidance:
 
 https://desertmoroccoadventure.com/files/internal-link-seo-mapper/
 
-## Development
+## Development and security checks
 
-This repository keeps release history, tests and quality checks alongside the plugin source.
+This repository contains the plugin source, release history, tests and automated quality checks.
 
 Useful commands after `composer install`:
 
