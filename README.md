@@ -6,6 +6,28 @@
 
 It helps WordPress site owners understand how pages connect through visual 2D/3D link maps and a Knowledge Graph, while keeping the core analysis inside WordPress.
 
+
+## Screenshots
+
+### Internal Link Dashboard
+
+![DMA InternLink Mapper WordPress internal link dashboard with scan reports, orphan pages and visual link map](docs/screenshots/dma-internlink-mapper-dashboard.png)
+
+Analyze internal links, incoming and outgoing links, orphan pages, weak anchors, redirects and broken links from one WordPress dashboard.
+
+### Knowledge Graph
+
+![DMA InternLink Mapper visual knowledge graph for WordPress site architecture and internal linking](docs/screenshots/dma-internlink-mapper-knowledge-graph.png)
+
+Explore internal-link relationships in a visual 2D knowledge graph, inspect page authority and architecture health, and export graph reports.
+
+### Link Opportunities
+
+![DMA InternLink Mapper WordPress internal link opportunities analysis and safe link insertion workflow](docs/screenshots/dma-internlink-mapper-link-opportunities.png)
+
+Find relevant internal-link opportunities using local analysis with confidence checks, existing-link validation and content-safe insertion rules.
+
+
 ## WordPress internal linking and SEO features
 
 - Internal link scanner and link reports
