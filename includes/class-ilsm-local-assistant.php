@@ -58,10 +58,10 @@ final class ILSM_Local_Assistant {
         $settings = get_option( 'ilsm_settings', array() );
         $types = array_values( array_filter( (array) ( $settings['post_types'] ?? ILSM_Activator::default_post_types() ), 'post_type_exists' ) );
         if ( ! in_array( $screen->post_type, $types, true ) ) { return; }
-        wp_enqueue_style( 'ilsm-font-awesome', ILSM_URL . 'admin/vendor/font-awesome/css/font-awesome.min.css', array(), ILSM_VERSION );
+        ILSM_Admin_Assets::enqueue_icons();
         $editor_css = ILSM_PATH . 'admin/css/editor-assistant.css';
         $editor_js  = ILSM_PATH . 'admin/js/editor-assistant.js';
-        wp_enqueue_style( 'ilsm-editor', ILSM_URL . 'admin/css/editor-assistant.css', array(), is_readable( $editor_css ) ? (string) filemtime( $editor_css ) : ILSM_VERSION );
+        wp_enqueue_style( 'ilsm-editor', ILSM_URL . 'admin/css/editor-assistant.css', array( 'ilsm-icons' ), is_readable( $editor_css ) ? (string) filemtime( $editor_css ) : ILSM_VERSION );
         wp_enqueue_script( 'ilsm-editor', ILSM_URL . 'admin/js/editor-assistant.js', array( 'jquery', 'wp-data', 'wp-blocks', 'wp-dom-ready' ), is_readable( $editor_js ) ? (string) filemtime( $editor_js ) : ILSM_VERSION, true );
         wp_localize_script( 'ilsm-editor', 'ILSM_EDITOR', array(
             'ajaxUrl' => admin_url( 'admin-ajax.php' ),
@@ -78,7 +78,7 @@ final class ILSM_Local_Assistant {
                 'insertFailed'   => __( 'Gutenberg rejected the block update. The original block content was restored.', 'dma-internlink-mapper' ),
                 'noBodyOpportunities' => __( 'No safe body-text link opportunities were found in the current editor content.', 'dma-internlink-mapper' ),
                 'noSafeAnchor' => __( 'No safe body-text anchor found', 'dma-internlink-mapper' ),
-                'invalidNaturalAnchor' => __( 'That anchor is not eligible. Use one to three meaningful words with spaces only; location-only and punctuation-separated phrases are excluded.', 'dma-internlink-mapper' ),
+                'invalidNaturalAnchor' => __( 'That anchor is not eligible. Use one to five meaningful words with spaces only; location-only and punctuation-separated phrases are excluded.', 'dma-internlink-mapper' ),
                 /* translators: 1: Search Console impressions, 2: average search position. */
                 'searchConsoleEvidence' => __( 'Search Console page evidence: %1$s impressions · average position %2$s', 'dma-internlink-mapper' ),
                 'intentJourney' => __( 'Reader journey', 'dma-internlink-mapper' ),
@@ -274,16 +274,22 @@ final class ILSM_Local_Assistant {
 
         if ( $term_names ) {
             $placeholders = implode( ',', array_fill( 0, count( $term_names ), '%s' ) );
-            $sql = "SELECT k.post_id, SUM(k.weight) AS term_score, COUNT(DISTINCT k.term) AS shared_terms
-                    FROM " . ILSM_Database::table( 'keywords' ) . " k
-                    INNER JOIN " . ILSM_Database::table( 'pages' ) . " p ON p.scan_id=k.scan_id AND p.post_id=k.post_id
+            $args = array_merge( array( ILSM_Database::table( 'keywords' ), ILSM_Database::table( 'pages' ), $scan_id ), $term_names, array( $post->ID ) );
+            // phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- The IN placeholder list is generated from a bounded internal term array and every identifier/value is passed through wpdb::prepare().
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT k.post_id, SUM(k.weight) AS term_score, COUNT(DISTINCT k.term) AS shared_terms
+                    FROM %i k
+                    INNER JOIN %i p ON p.scan_id=k.scan_id AND p.post_id=k.post_id
                     WHERE k.scan_id=%d AND k.term IN ({$placeholders}) AND k.post_id<>%d
                     GROUP BY k.post_id
                     ORDER BY term_score DESC, shared_terms DESC
-                    LIMIT 120";
-            $args = array_merge( array( $scan_id ), $term_names, array( $post->ID ) );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-            $rows = $wpdb->get_results( $wpdb->prepare( $sql, $args ), ARRAY_A );
+                    LIMIT 120",
+                    $args
+                ),
+                ARRAY_A
+            );
+            // phpcs:enable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
             foreach ( (array) $rows as $row ) {
                 $candidate_id = absint( $row['post_id'] ?? 0 );
                 if ( ! $candidate_id ) { continue; }
@@ -294,11 +300,11 @@ final class ILSM_Local_Assistant {
 
         // Examine scanned titles locally as a second candidate source. The hard
         // limit prevents one editor request from loading an unbounded site index.
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned scan indexes are read directly so editor suggestions reflect the latest completed scan.
         $page_rows = $wpdb->get_results(
             $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-                'SELECT post_id,title FROM ' . ILSM_Database::table( 'pages' ) . ' WHERE scan_id=%d AND post_id<>%d ORDER BY id ASC LIMIT 1500',
+                'SELECT post_id,title FROM %i WHERE scan_id=%d AND post_id<>%d ORDER BY id ASC LIMIT 1500',
+                ILSM_Database::table( 'pages' ),
                 $scan_id,
                 $post->ID
             ),
@@ -331,10 +337,10 @@ final class ILSM_Local_Assistant {
 
         if ( ! $candidate_ids ) { return array(); }
 
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned scan indexes are read directly so editor suggestions reflect the latest completed scan.
         $existing_targets = $wpdb->get_col( $wpdb->prepare(
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-            'SELECT DISTINCT target_post_id FROM ' . ILSM_Database::table( 'links' ) . ' WHERE scan_id=%d AND source_post_id=%d AND target_post_id>0',
+            'SELECT DISTINCT target_post_id FROM %i WHERE scan_id=%d AND source_post_id=%d AND target_post_id>0',
+            ILSM_Database::table( 'links' ),
             $scan_id,
             $post->ID
         ) );
@@ -429,16 +435,17 @@ final class ILSM_Local_Assistant {
             if ( isset( $keyword_scores[ $target_id ] ) ) {
                 $score += min( 8, log( 1 + max( 0, $keyword_scores[ $target_id ] ) ) );
             }
+            // Search Console remains supporting evidence, but strategic ranking
+            // applies it after contextual relevance has already passed on its own.
             $search_boost = self::search_console_page_boost( $search_metrics );
-            $score += $search_boost;
             $target_intent = ILSM_Search_Intent::classify_post( $target );
             $intent_boost = ILSM_Search_Intent::compatibility_boost( $source_intent, $target_intent );
             $score += $intent_boost;
 
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned scan indexes are read directly so editor suggestions reflect the latest completed scan.
             $feedback = $wpdb->get_var( $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-                'SELECT decision FROM ' . ILSM_Database::table( 'feedback' ) . ' WHERE user_id=%d AND source_post_id=%d AND target_post_id=%d',
+                'SELECT decision FROM %i WHERE user_id=%d AND source_post_id=%d AND target_post_id=%d',
+                ILSM_Database::table( 'feedback' ),
                 get_current_user_id(),
                 $post->ID,
                 $target_id
@@ -474,17 +481,21 @@ final class ILSM_Local_Assistant {
             if ( $intent_boost > 0 ) { $signals[] = __( 'Source and destination intent form a useful reader journey.', 'dma-internlink-mapper' ); }
             $signals[] = __( 'This destination is not already linked from the current post.', 'dma-internlink-mapper' );
 
+            $contextual_score = max( 0, min( 100, (int) round( $score ) ) );
             $suggestions[] = array(
                 'post_id'       => $target_id,
                 'title'         => html_entity_decode( get_the_title( $target ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ),
                 'url'           => esc_url_raw( $target_url ),
                 'edit_url'      => esc_url_raw( get_edit_post_link( $target_id, 'raw' ) ),
-                'score'         => max( 0, min( 100, (int) round( $score ) ) ),
+                'score'         => $contextual_score,
+                'contextual_score' => $contextual_score,
+                'strategy_score'   => 50,
                 'anchors'       => $anchors,
                 'anchor_locations' => $anchor_locations,
                 'shared_terms'  => array_values( $why ),
                 'reason'        => implode( ' ', $signals ),
                 'focus_matches' => $focus_matches,
+                'target_focus'  => $target_focus,
                 'search_console' => ! empty( $search_metrics['impressions'] ) ? array(
                     'clicks'      => absint( $search_metrics['clicks'] ?? 0 ),
                     'impressions' => absint( $search_metrics['impressions'] ),
@@ -497,11 +508,58 @@ final class ILSM_Local_Assistant {
             );
         }
 
+        // Context remains the gatekeeper. Once all contextual candidates exist,
+        // prime graph/keyword evidence in bounded bulk queries and add the
+        // deterministic strategic layer without remote calls or AI.
+        if ( $suggestions && class_exists( 'ILSM_Opportunity_Strategy' ) ) {
+            $strategy_ids = array( $post->ID );
+            $focus_map = array( $post->ID => $source_focus );
+            foreach ( $suggestions as $suggestion ) {
+                $target_id = absint( $suggestion['post_id'] ?? 0 );
+                if ( ! $target_id ) { continue; }
+                $strategy_ids[] = $target_id;
+                $focus_map[ $target_id ] = (array) ( $suggestion['target_focus'] ?? array() );
+            }
+            ILSM_Opportunity_Strategy::prepare( $scan_id, $strategy_ids, $focus_map );
+
+            foreach ( $suggestions as &$suggestion ) {
+                $target = get_post( absint( $suggestion['post_id'] ?? 0 ) );
+                if ( ! $target instanceof WP_Post || empty( $suggestion['anchors'][0] ) ) { continue; }
+                $strategic = ILSM_Opportunity_Strategy::score(
+                    $scan_id,
+                    $post,
+                    $target,
+                    (string) $suggestion['anchors'][0],
+                    absint( $suggestion['contextual_score'] ?? $suggestion['score'] ?? 0 ),
+                    $source_focus,
+                    (array) ( $suggestion['target_focus'] ?? array() )
+                );
+                $suggestion['score']            = absint( $strategic['score'] ?? $suggestion['score'] );
+                $suggestion['strategy_score']   = absint( $strategic['strategy_score'] ?? 50 );
+                $suggestion['score_adjustment'] = (int) ( $strategic['adjustment'] ?? 0 );
+                $suggestion['score_breakdown']  = (array) ( $strategic['details'] ?? array() );
+                $strategic_signals = array_slice( (array) ( $strategic['signals'] ?? array() ), 0, 4 );
+                if ( $strategic_signals ) {
+                    $suggestion['reason'] = trim( (string) $suggestion['reason'] . ' ' . implode( ' ', $strategic_signals ) );
+                }
+            }
+            unset( $suggestion );
+        }
+
         usort( $suggestions, static function( $a, $b ) {
             $score_order = (int) $b['score'] <=> (int) $a['score'];
             if ( 0 !== $score_order ) { return $score_order; }
+            $strategy_order = (int) ( $b['strategy_score'] ?? 50 ) <=> (int) ( $a['strategy_score'] ?? 50 );
+            if ( 0 !== $strategy_order ) { return $strategy_order; }
+            $context_order = (int) ( $b['contextual_score'] ?? 0 ) <=> (int) ( $a['contextual_score'] ?? 0 );
+            if ( 0 !== $context_order ) { return $context_order; }
             return strcasecmp( (string) $a['title'], (string) $b['title'] );
         } );
+
+        foreach ( $suggestions as &$suggestion ) {
+            unset( $suggestion['target_focus'] );
+        }
+        unset( $suggestion );
 
         return array_slice( $suggestions, 0, max( 1, min( 8, absint( $limit ) ) ) );
     }
@@ -666,11 +724,10 @@ final class ILSM_Local_Assistant {
 
     private static function get_indexed_terms( $scan_id, $post_id ) {
         global $wpdb;
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned scan indexes are read directly so editor suggestions reflect the latest completed scan.
         $rows = $wpdb->get_results( $wpdb->prepare(
-            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-            'SELECT term,weight FROM ' . ILSM_Database::table( 'keywords' ) . ' WHERE scan_id=%d AND post_id=%d ORDER BY weight DESC LIMIT 100',
-            $scan_id, $post_id
+            'SELECT term,weight FROM %i WHERE scan_id=%d AND post_id=%d ORDER BY weight DESC LIMIT 100',
+            ILSM_Database::table( 'keywords' ), $scan_id, $post_id
         ), ARRAY_A );
         $out = array();
         foreach ( $rows as $row ) { $out[ $row['term'] ] = (float) $row['weight']; }
@@ -779,8 +836,8 @@ final class ILSM_Local_Assistant {
     }
 
     /**
-     * Generate clean contiguous anchors in editorial order: three words first,
-     * then two, then a distinctive single word only as a final fallback.
+     * Generate clean contiguous anchors in editorial order: longer natural phrases first,
+     * down to a distinctive single word only as a final fallback.
      */
     private static function phrase_candidates_from_text( $text, $base_priority, $source ) {
         $text = trim( html_entity_decode( wp_strip_all_tags( (string) $text, true ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
@@ -791,11 +848,11 @@ final class ILSM_Local_Assistant {
         if ( ! $tokens ) { return array(); }
 
         $count = count( $tokens );
-        $max_n = min( 3, $count );
+        $max_n = min( 5, $count );
         $out   = array();
 
         // A complete keyphrase is useful only when it already fits the maximum.
-        if ( $count <= 3 && self::is_useful_anchor_phrase( $text ) ) {
+        if ( $count <= 5 && self::is_useful_anchor_phrase( $text ) ) {
             $out[] = array( 'phrase' => $text, 'priority' => (int) $base_priority + 8, 'source' => $source );
         }
 
@@ -880,7 +937,7 @@ final class ILSM_Local_Assistant {
             if ( '' === $phrase ) { continue; }
 
             $tokens = preg_split( '/[^\p{L}\p{N}]+/u', $phrase, -1, PREG_SPLIT_NO_EMPTY );
-            if ( ! $tokens || count( $tokens ) > 3 || ! self::is_useful_anchor_phrase( implode( ' ', $tokens ) ) ) { continue; }
+            if ( ! $tokens || count( $tokens ) > 5 || ! self::is_useful_anchor_phrase( implode( ' ', $tokens ) ) ) { continue; }
             $escaped = array_map( static function( $token ) { return preg_quote( $token, '/' ); }, $tokens );
             $pattern = '/(?<![\p{L}\p{N}])' . implode( '[\x{20}\x{09}\x{00A0}]+', $escaped ) . '(?![\p{L}\p{N}])/iu';
             if ( ! preg_match( $pattern, $source_text, $found ) ) { continue; }
