@@ -65,8 +65,9 @@ final class ILSM_SEO_Provider_AIOSEO implements ILSM_SEO_Provider_Interface {
 
         $table = $wpdb->prefix . 'aioseo_posts';
         if ( null === $columns ) {
+            $like = $wpdb->esc_like( $table );
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only optional-provider schema discovery is cached per request.
-            $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) );
+            $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $like ) );
             if ( $table !== $exists ) {
                 $columns = array();
             } else {

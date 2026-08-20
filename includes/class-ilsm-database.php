@@ -31,8 +31,9 @@ class ILSM_Database {
 
     public static function table_exists( $table ) {
         global $wpdb;
+        $like = $wpdb->esc_like( (string) $table );
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-        return $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table;
+        return $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $like ) ) === $table;
     }
 
     public static function latest_completed_scan_id() {
@@ -50,8 +51,9 @@ class ILSM_Database {
             if ( ! self::table_exists( $table ) ) {
                 continue;
             }
+            $like = $wpdb->esc_like( $table );
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-            $status = $wpdb->get_row( $wpdb->prepare( 'SHOW TABLE STATUS LIKE %s', $table ), ARRAY_A );
+            $status = $wpdb->get_row( $wpdb->prepare( 'SHOW TABLE STATUS LIKE %s', $like ), ARRAY_A );
             if ( ! $status || empty( $status['Engine'] ) || 'InnoDB' !== $status['Engine'] ) {
                 return false;
             }
