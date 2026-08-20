@@ -49,10 +49,11 @@ function ilsm_uninstall_strip_elementor_value( $value ) {
 function ilsm_uninstall_remove_inserted_links() {
 	global $wpdb;
 	$table = $wpdb->prefix . 'ilsm_insertions';
+	$like  = $wpdb->esc_like( $table );
 
 	// Only operate when the plugin-owned audit table still exists.
 	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Uninstall must inspect a plugin-owned table directly.
-	if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) !== $table ) {
+	if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $like ) ) !== $table ) {
 		return;
 	}
 
