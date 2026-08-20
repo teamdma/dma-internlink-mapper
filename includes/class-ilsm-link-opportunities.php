@@ -48,11 +48,11 @@ final class ILSM_Link_Opportunities {
             return;
         }
 
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable opportunity rows must be updated immediately.
         $wpdb->query(
             $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-                'DELETE FROM ' . self::table() . " WHERE scan_id=%d AND status='new' AND score<%d",
+                "DELETE FROM %i WHERE scan_id=%d AND status='new' AND score<%d",
+                self::table(),
                 $scan_id,
                 $minimum
             )
@@ -296,10 +296,10 @@ final class ILSM_Link_Opportunities {
         }
 
         $links = ILSM_Database::table( 'links' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current link-state must be read fresh.
         $found = $wpdb->get_var( $wpdb->prepare(
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-            "SELECT 1 FROM {$links} WHERE scan_id=%d AND source_post_id=%d AND target_post_id=%d LIMIT 1",
+            "SELECT 1 FROM %i WHERE scan_id=%d AND source_post_id=%d AND target_post_id=%d LIMIT 1",
+            $links,
             $scan_id,
             $source_id,
             $target_id
@@ -324,7 +324,7 @@ final class ILSM_Link_Opportunities {
             $html .= ' ' . $elementor;
         }
 
-        if ( preg_match_all( '~<a\\b[^>]*\\bhref\\s*=\\s*(["\\\'])(.*?)\\1~is', $html, $matches ) ) {
+        if ( preg_match_all( '~<a\b[^>]*\bhref\s*=\s*(["\'])(.*?)\1~is', $html, $matches ) ) {
             $base = get_permalink( $source_id );
             foreach ( $matches[2] as $href ) {
                 if ( $target_url === ILSM_Link_Normalizer::normalize( $href, $base ) ) {
@@ -345,10 +345,11 @@ final class ILSM_Link_Opportunities {
         }
         $opportunities = self::table();
         $links = ILSM_Database::table( 'links' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current opportunity/link state must be reconciled immediately.
         $wpdb->query( $wpdb->prepare(
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-            "DELETE o FROM {$opportunities} o INNER JOIN {$links} l ON l.scan_id=o.scan_id AND l.source_post_id=o.source_post_id AND l.target_post_id=o.target_post_id WHERE o.scan_id=%d AND o.status IN ('new','failed')",
+            "DELETE o FROM %i o INNER JOIN %i l ON l.scan_id=o.scan_id AND l.source_post_id=o.source_post_id AND l.target_post_id=o.target_post_id WHERE o.scan_id=%d AND o.status IN ('new','failed')",
+            $opportunities,
+            $links,
             $scan_id
         ) );
     }
@@ -367,6 +368,10 @@ final class ILSM_Link_Opportunities {
         }
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
         $offset = max( 0, absint( wp_unslash( $_POST['offset'] ?? 0 ) ) );
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the authenticated AJAX guard.
+        $cursor_supplied = isset( $_POST['cursor'] );
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the authenticated AJAX guard.
+        $cursor = max( 0, absint( wp_unslash( $_POST['cursor'] ?? 0 ) ) );
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
         $batch  = max( 1, min( 20, absint( wp_unslash( $_POST['batch'] ?? 6 ) ) ) );
         $pages  = ILSM_Database::table( 'pages' );
@@ -378,15 +383,32 @@ final class ILSM_Link_Opportunities {
         $inserter = new ILSM_Link_Inserter();
         if ( 0 === $offset ) {
             // Keep successful audit-state rows; rebuild every non-inserted candidate.
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-            $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE scan_id=%d AND status<>'inserted'", $scan ) );
-            update_option( 'ilsm_opportunity_engine_version', '8', false );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Rebuild mutable opportunity candidates from the current scan.
+            $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE scan_id=%d AND status<>'inserted'", $table, $scan ) );
+            update_option( 'ilsm_opportunity_engine_version', '9', false );
             delete_transient( self::generation_summary_key() );
         }
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$pages} WHERE scan_id=%d", $scan ) );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $rows  = $wpdb->get_col( $wpdb->prepare( "SELECT post_id FROM {$pages} WHERE scan_id=%d ORDER BY post_id LIMIT %d OFFSET %d", $scan, $batch, $offset ) );
+        $total_cache_key = 'scan-post-total:' . $scan;
+        $total = wp_cache_get( $total_cache_key, 'ilsm_scan_pages' );
+        if ( false === $total ) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Plugin-owned custom scan table has no WordPress CRUD API; immutable completed-scan totals are cached immediately below.
+            $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d", $pages, $scan ) );
+            wp_cache_set( $total_cache_key, $total, 'ilsm_scan_pages', HOUR_IN_SECONDS );
+        } else {
+            $total = (int) $total;
+        }
+        $batch_cache_key = 'scan-post-ids:' . $scan . ':' . ( $cursor_supplied ? 'cursor:' . $cursor : 'offset:' . $offset ) . ':batch:' . $batch;
+        $rows = wp_cache_get( $batch_cache_key, 'ilsm_scan_pages' );
+        if ( false === $rows ) {
+            if ( $cursor_supplied ) {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Plugin-owned custom scan table has no WordPress CRUD API; immutable completed-scan batches are cached immediately below.
+                $rows = $wpdb->get_col( $wpdb->prepare( 'SELECT post_id FROM %i WHERE scan_id=%d AND post_id>%d ORDER BY post_id ASC LIMIT %d', $pages, $scan, $cursor, $batch ) );
+            } else {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Backward-compatible offset path for an already-open older admin page; immutable completed-scan batches are cached immediately below.
+                $rows = $wpdb->get_col( $wpdb->prepare( 'SELECT post_id FROM %i WHERE scan_id=%d ORDER BY post_id ASC LIMIT %d OFFSET %d', $pages, $scan, $batch, $offset ) );
+            }
+            wp_cache_set( $batch_cache_key, $rows, 'ilsm_scan_pages', HOUR_IN_SECONDS );
+        }
         $created = 0;
         foreach ( (array) $rows as $source_id ) {
             $post = get_post( absint( $source_id ) );
@@ -408,6 +430,10 @@ final class ILSM_Link_Opportunities {
                 }
 
                 $score = max( 0, min( 100, absint( $suggestion['score'] ?? 0 ) ) );
+                $context_score = max( 0, min( 100, absint( $suggestion['contextual_score'] ?? $score ) ) );
+                $strategy_score = max( 0, min( 100, absint( $suggestion['strategy_score'] ?? 50 ) ) );
+                $score_details = wp_json_encode( (array) ( $suggestion['score_breakdown'] ?? array() ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+                if ( ! is_string( $score_details ) ) { $score_details = ''; }
                 if ( $score < $minimum_confidence ) {
                     $rejected['below_confidence']++;
                     continue;
@@ -415,7 +441,8 @@ final class ILSM_Link_Opportunities {
 
                 // Store only opportunities that meet the current confidence threshold
                 // and that the exact insertion engine can locate in a supported Classic,
-                // Gutenberg, or Elementor text location.
+                // Gutenberg, or Elementor text location. Strategic ranking can reorder
+                // already-relevant candidates, but it never bypasses these hard checks.
                 $preflight = $inserter->validate_candidate( $source_id, $target_id, $anchor );
                 if ( is_wp_error( $preflight ) ) {
                     $code = $preflight->get_error_code();
@@ -438,17 +465,17 @@ final class ILSM_Link_Opportunities {
                 $context = self::excerpt( $body, $anchor );
                 $key     = hash( 'sha256', $scan . '|' . $source_id . '|' . $target_id . '|' . ILSM_Text::lower( $anchor ) );
                 $now     = current_time( 'mysql', true );
-                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Opportunity generation writes fresh scan-derived candidates.
                 $ok = $wpdb->query( $wpdb->prepare(
-                    // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-                    "INSERT INTO {$table}(scan_id,opportunity_key,source_post_id,target_post_id,anchor_text,context_excerpt,score,reason,status,created_at,updated_at) VALUES(%d,%s,%d,%d,%s,%s,%d,%s,'new',%s,%s) ON DUPLICATE KEY UPDATE score=VALUES(score),reason=VALUES(reason),context_excerpt=VALUES(context_excerpt),updated_at=VALUES(updated_at)",
-                    $scan, $key, $source_id, $target_id, ILSM_Text::substring( $anchor, 0, 190 ), ILSM_Text::substring( $context, 0, 700 ), $score, ILSM_Text::substring( $reason, 0, 500 ), $now, $now
+                    "INSERT INTO %i (scan_id,opportunity_key,source_post_id,target_post_id,anchor_text,context_excerpt,score,context_score,strategy_score,score_details,reason,status,created_at,updated_at) VALUES(%d,%s,%d,%d,%s,%s,%d,%d,%d,%s,%s,'new',%s,%s) ON DUPLICATE KEY UPDATE score=VALUES(score),context_score=VALUES(context_score),strategy_score=VALUES(strategy_score),score_details=VALUES(score_details),reason=VALUES(reason),context_excerpt=VALUES(context_excerpt),updated_at=VALUES(updated_at)",
+                    $table, $scan, $key, $source_id, $target_id, ILSM_Text::substring( $anchor, 0, 190 ), ILSM_Text::substring( $context, 0, 700 ), $score, $context_score, $strategy_score, $score_details, ILSM_Text::substring( $reason, 0, 500 ), $now, $now
                 ) );
                 if ( 1 === (int) $ok ) { $created++; }
             }
         }
-        $next = $offset + count( $rows );
-        $done = count( $rows ) < $batch || $next >= $total;
+        $next        = $offset + count( $rows );
+        $next_cursor = $rows ? max( array_map( 'absint', (array) $rows ) ) : $cursor;
+        $done        = count( $rows ) < $batch || $next >= $total;
 
         $summary = get_transient( self::generation_summary_key() );
         if ( ! is_array( $summary ) || 0 === $offset ) {
@@ -473,6 +500,7 @@ final class ILSM_Link_Opportunities {
 
         wp_send_json_success( array(
             'offset' => $next,
+            'cursor' => $next_cursor,
             'total' => $total,
             'created' => $created,
             'checked' => $checked,
@@ -566,6 +594,10 @@ final class ILSM_Link_Opportunities {
 
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
         $offset         = max( 0, absint( wp_unslash( $_POST['offset'] ?? 0 ) ) );
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the authenticated AJAX guard.
+        $cursor_supplied = isset( $_POST['cursor'] );
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the authenticated AJAX guard.
+        $cursor          = max( 0, absint( wp_unslash( $_POST['cursor'] ?? 0 ) ) );
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
         $batch          = max( 5, min( 50, absint( wp_unslash( $_POST['batch'] ?? 20 ) ) ) );
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
@@ -601,22 +633,43 @@ final class ILSM_Link_Opportunities {
             $args = array_merge( $args, $enabled_types );
         }
 
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated. The placeholder list is completed by the validated argument array.
-        $post_total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$pages} WHERE {$where}", $args ) );
-        $query_args = array_merge( $args, array( $batch, $offset ) );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated. The dynamic placeholder list matches the validated argument array.
-        $source_ids = $post_total ? $wpdb->get_col( $wpdb->prepare( "SELECT post_id FROM {$pages} WHERE {$where} ORDER BY post_id LIMIT %d OFFSET %d", $query_args ) ) : array();
+        $count_args = array_merge( array( $pages ), $args );
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- WHERE clauses and placeholder lists are assembled only from fixed branches; all identifiers/values are passed to prepare().
+        $post_total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE {$where}", $count_args ) );
+        if ( $cursor_supplied ) {
+            $cursor_where = $where . ' AND post_id>%d';
+            $query_args   = array_merge( array( $pages ), $args, array( $cursor, $batch ) );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- WHERE clauses and placeholder lists are assembled only from fixed branches; every value is prepared. The cursor keeps large-site scans keyset-based.
+            $source_ids = $post_total ? $wpdb->get_col( $wpdb->prepare( "SELECT post_id FROM %i WHERE {$cursor_where} ORDER BY post_id ASC LIMIT %d", $query_args ) ) : array();
+        } else {
+            $query_args = array_merge( array( $pages ), $args, array( $batch, $offset ) );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Compatibility path for an already-open older admin page; every value is prepared.
+            $source_ids = $post_total ? $wpdb->get_col( $wpdb->prepare( "SELECT post_id FROM %i WHERE {$where} ORDER BY post_id ASC LIMIT %d OFFSET %d", $query_args ) ) : array();
+        }
         $results = array();
         $inserter = new ILSM_Link_Inserter();
         $minimum_confidence = self::minimum_confidence();
+        $target_focus = $target_post ? ILSM_SEO_Provider_Registry::focus_keyphrases( $target_post->ID ) : array();
+        $strategy_focus = array();
+        if ( $target_post && class_exists( 'ILSM_Opportunity_Strategy' ) ) {
+            $strategy_ids = array_merge( array( $target_post->ID ), array_map( 'absint', (array) $source_ids ) );
+            $strategy_focus[ $target_post->ID ] = $target_focus;
+            foreach ( (array) $source_ids as $strategy_source_id ) {
+                $strategy_source_id = absint( $strategy_source_id );
+                if ( $strategy_source_id ) {
+                    $strategy_focus[ $strategy_source_id ] = ILSM_SEO_Provider_Registry::focus_keyphrases( $strategy_source_id );
+                }
+            }
+            ILSM_Opportunity_Strategy::prepare( $scan, $strategy_ids, $strategy_focus );
+        }
 
         foreach ( (array) $source_ids as $source_id ) {
             $source_id = absint( $source_id );
             if ( ! $source_id ) { continue; }
             $already_linked = false;
             if ( $target_post ) {
-                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-                $already_linked = (bool) $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$links} WHERE scan_id=%d AND source_post_id=%d AND target_post_id=%d LIMIT 1", $scan, $source_id, $target_post->ID ) );
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current link-state must be read fresh.
+                $already_linked = (bool) $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM %i WHERE scan_id=%d AND source_post_id=%d AND target_post_id=%d LIMIT 1", $links, $scan, $source_id, $target_post->ID ) );
             } else {
                 $already_linked = self::source_contains_url( get_post_field( 'post_content', $source_id ), $target_url );
             }
@@ -637,14 +690,36 @@ final class ILSM_Link_Opportunities {
             }
             foreach ( $matches as $match ) {
                 $manual_only = ! empty( $match['manual_only'] );
+                $contextual_score = 0;
+                $strategy_score   = 50;
+                $score_breakdown  = array();
+                $strategy_signals = array();
                 if ( $manual_only ) {
                     $score = absint( $match['score'] ?? 0 );
+                    $contextual_score = $score;
                 } elseif ( $target_post ) {
                     $preflight = $inserter->validate_candidate( $source_id, $target_post->ID, $match['anchor'] );
                     if ( is_wp_error( $preflight ) ) { continue; }
-                    $score = self::focused_score( $match, $source, $target_post->ID, $already_linked );
+                    $contextual_score = self::focused_score( $match, $source, $target_post->ID, $already_linked );
+                    $score = $contextual_score;
+                    if ( class_exists( 'ILSM_Opportunity_Strategy' ) ) {
+                        $strategic = ILSM_Opportunity_Strategy::score(
+                            $scan,
+                            $source,
+                            $target_post,
+                            (string) $match['anchor'],
+                            $contextual_score,
+                            (array) ( $strategy_focus[ $source_id ] ?? array() ),
+                            $target_focus
+                        );
+                        $score            = absint( $strategic['score'] ?? $contextual_score );
+                        $strategy_score   = absint( $strategic['strategy_score'] ?? 50 );
+                        $score_breakdown  = (array) ( $strategic['details'] ?? array() );
+                        $strategy_signals = array_slice( (array) ( $strategic['signals'] ?? array() ), 0, 4 );
+                    }
                 } else {
                     $score = self::generic_focused_score( $match, $source, $keyword, $already_linked );
+                    $contextual_score = $score;
                 }
                 if ( $score < $minimum_confidence ) { continue; }
                 $results[] = array(
@@ -655,6 +730,10 @@ final class ILSM_Link_Opportunities {
                     'anchor'          => $match['anchor'],
                     'context'         => $manual_only ? $match['context'] : self::excerpt( $body, $match['anchor'] ),
                     'score'           => $score,
+                    'contextual_score'=> $contextual_score,
+                    'strategy_score'  => $strategy_score,
+                    'score_breakdown' => $score_breakdown,
+                    'strategy_signals'=> $strategy_signals,
                     'signal'          => $match['signal'],
                     'already_linked'  => $already_linked,
                     'manual_only'     => $manual_only || ( 'term' === $target_kind ),
@@ -693,16 +772,24 @@ final class ILSM_Link_Opportunities {
             }
         }
 
-        usort( $results, static function( $a, $b ) { return (int) $b['score'] <=> (int) $a['score']; } );
+        usort( $results, static function( $a, $b ) {
+            $score_order = (int) $b['score'] <=> (int) $a['score'];
+            if ( 0 !== $score_order ) { return $score_order; }
+            $strategy_order = (int) ( $b['strategy_score'] ?? 50 ) <=> (int) ( $a['strategy_score'] ?? 50 );
+            if ( 0 !== $strategy_order ) { return $strategy_order; }
+            return (int) ( $b['contextual_score'] ?? 0 ) <=> (int) ( $a['contextual_score'] ?? 0 );
+        } );
         $deduped = array();
         foreach ( $results as $row ) {
             $key = absint( $row['source_id'] ) . '|' . $row['source_type'] . '|' . $row['source_title'];
             if ( ! isset( $deduped[ $key ] ) || $row['score'] > $deduped[ $key ]['score'] ) { $deduped[ $key ] = $row; }
         }
-        $next = $offset + count( $source_ids );
+        $next        = $offset + count( $source_ids );
+        $next_cursor = $source_ids ? max( array_map( 'absint', (array) $source_ids ) ) : $cursor;
         wp_send_json_success( array(
             'results'      => array_slice( array_values( $deduped ), 0, 75 ),
             'offset'       => $next,
+            'cursor'       => $next_cursor,
             'total'        => $post_total,
             'done'         => count( $source_ids ) < $batch || $next >= $post_total,
             'percent'      => $post_total ? min( 100, (int) round( $next / $post_total * 100 ) ) : 100,
@@ -880,27 +967,33 @@ final class ILSM_Link_Opportunities {
             array_push( $args, $like, $like, $like );
         }
         $where_sql = implode( ' AND ', $where );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated. The placeholder list is completed by the validated argument array.
-        $total = $scan ? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} o JOIN {$wpdb->posts} sp ON sp.ID=o.source_post_id JOIN {$wpdb->posts} tp ON tp.ID=o.target_post_id WHERE {$where_sql}", $args ) ) : 0;
+        $count_args = array_merge( array( $table, $wpdb->posts, $wpdb->posts ), $args );
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Filter clauses are built only from fixed branches; identifiers and values are passed to prepare().
+        $total = $scan ? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i o JOIN %i sp ON sp.ID=o.source_post_id JOIN %i tp ON tp.ID=o.target_post_id WHERE {$where_sql}", $count_args ) ) : 0;
         $total_pages = max( 1, (int) ceil( $total / $per_page ) );
         if ( $paged > $total_pages ) { $paged = $total_pages; }
         $offset = ( $paged - 1 ) * $per_page;
         $pages_table = ILSM_Database::table( 'pages' );
         $search_table = ILSM_Database::table( 'search_console_urls' );
-        $sql = "SELECT o.*,sp.post_title source_title,sp.post_type source_type,tp.post_title target_title,COALESCE(srcp.outgoing_count,0) source_outgoing_count,COALESCE(tgtp.incoming_count,0) target_incoming_count,COALESCE(sct.clicks,0) search_clicks,COALESCE(sct.impressions,0) search_impressions,COALESCE(sct.position,0) search_position FROM {$table} o JOIN {$wpdb->posts} sp ON sp.ID=o.source_post_id JOIN {$wpdb->posts} tp ON tp.ID=o.target_post_id LEFT JOIN {$pages_table} srcp ON srcp.scan_id=o.scan_id AND srcp.post_id=o.source_post_id LEFT JOIN {$pages_table} tgtp ON tgtp.scan_id=o.scan_id AND tgtp.post_id=o.target_post_id LEFT JOIN {$search_table} sct ON sct.url_hash=tgtp.url_hash WHERE {$where_sql} ORDER BY o.score DESC,COALESCE(sct.impressions,0) DESC,o.id DESC LIMIT %d OFFSET %d";
-        $query_args = array_merge( $args, array( $per_page, $offset ) );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        $rows = $scan ? $wpdb->get_results( $wpdb->prepare( $sql, $query_args ) ) : array();
+        $query_args = array_merge( array( $table, $wpdb->posts, $wpdb->posts, $pages_table, $pages_table, $search_table ), $args, array( $per_page, $offset ) );
+        // phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- The WHERE fragment is assembled only from fixed plugin-owned clauses and its values are matched to generated placeholders before wpdb::prepare().
+        $rows = $scan ? $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT o.*,sp.post_title source_title,sp.post_type source_type,tp.post_title target_title,COALESCE(srcp.outgoing_count,0) source_outgoing_count,COALESCE(tgtp.incoming_count,0) target_incoming_count,COALESCE(sct.clicks,0) search_clicks,COALESCE(sct.impressions,0) search_impressions,COALESCE(sct.position,0) search_position FROM %i o JOIN %i sp ON sp.ID=o.source_post_id JOIN %i tp ON tp.ID=o.target_post_id LEFT JOIN %i srcp ON srcp.scan_id=o.scan_id AND srcp.post_id=o.source_post_id LEFT JOIN %i tgtp ON tgtp.scan_id=o.scan_id AND tgtp.post_id=o.target_post_id LEFT JOIN %i sct ON sct.url_hash=tgtp.url_hash WHERE {$where_sql} ORDER BY o.score DESC,o.strategy_score DESC,o.context_score DESC,COALESCE(sct.impressions,0) DESC,o.id DESC LIMIT %d OFFSET %d",
+                $query_args
+            )
+        ) : array();
+        // phpcs:enable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
         $counts = array( 'new' => 0, 'reviewed' => 0, 'ignored' => 0, 'inserted' => 0, 'failed' => 0, 'undone' => 0, 'all' => 0 );
         if ( $scan ) {
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-            foreach ( (array) $wpdb->get_results( $wpdb->prepare( "SELECT status,COUNT(*) n FROM {$table} WHERE scan_id=%d GROUP BY status", $scan ), ARRAY_A ) as $row ) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current opportunity counts must be read fresh.
+            foreach ( (array) $wpdb->get_results( $wpdb->prepare( "SELECT status,COUNT(*) n FROM %i WHERE scan_id=%d GROUP BY status", $table, $scan ), ARRAY_A ) as $row ) {
                 if ( isset( $counts[ $row['status'] ] ) ) { $counts[ $row['status'] ] = absint( $row['n'] ); }
             }
             $counts['all'] = array_sum( array_intersect_key( $counts, array_flip( array( 'new','reviewed','ignored','inserted','failed','undone' ) ) ) );
         }
         echo '<div class="ilsm-opportunities-modern">';
-	        echo '<div class="ilsm-opportunity-topbar"><div class="ilsm-opportunity-tabs" role="tablist"><button type="button" class="ilsm-opportunity-tab is-active" data-opportunity-view="all"><i class="fa fa-link" aria-hidden="true"></i> ' . esc_html__( 'All Opportunities', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-opportunity-tab" data-opportunity-view="target"' . disabled( ! $scan, true, false ) . '><i class="fa fa-search" aria-hidden="true"></i> ' . esc_html__( 'Find Links to a Page', 'dma-internlink-mapper' ) . '</button></div><div class="ilsm-opportunity-top-actions"><a class="ilsm-help-link" href="' . esc_url( admin_url( 'admin.php?page=ilsm-settings' ) ) . '"><i class="fa fa-question-circle-o" aria-hidden="true"></i> ' . esc_html__( 'How it works', 'dma-internlink-mapper' ) . '</a>' . ( $scan ? '<button type="button" class="ilsm-btn ilsm-btn-primary" id="ilsm-build-opportunities"><i class="fa fa-magic" aria-hidden="true"></i> ' . esc_html__( 'Generate opportunities', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-btn ilsm-refresh-opportunities"><i class="fa fa-refresh" aria-hidden="true"></i> ' . esc_html__( 'Refresh scan data', 'dma-internlink-mapper' ) . '</button>' : '' ) . '</div></div>';
+        echo '<div class="ilsm-opportunity-topbar"><div class="ilsm-opportunity-tabs" role="tablist"><button type="button" class="ilsm-opportunity-tab is-active" data-opportunity-view="all"><i class="fa fa-link" aria-hidden="true"></i> ' . esc_html__( 'All Opportunities', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-opportunity-tab" data-opportunity-view="target"' . disabled( ! $scan, true, false ) . '><i class="fa fa-search" aria-hidden="true"></i> ' . esc_html__( 'Find Links to a Page', 'dma-internlink-mapper' ) . '</button></div><div class="ilsm-opportunity-top-actions"><a class="ilsm-help-link" href="' . esc_url( admin_url( 'admin.php?page=ilsm-settings' ) ) . '"><i class="fa fa-question-circle-o" aria-hidden="true"></i> ' . esc_html__( 'How it works', 'dma-internlink-mapper' ) . '</a>' . ( $scan ? '<button type="button" class="ilsm-btn ilsm-btn-primary" id="ilsm-build-opportunities"><i class="fa fa-magic" aria-hidden="true"></i> ' . esc_html__( 'Generate opportunities', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-btn ilsm-refresh-opportunities"><i class="fa fa-refresh" aria-hidden="true"></i> ' . esc_html__( 'Refresh scan data', 'dma-internlink-mapper' ) . '</button>' : '' ) . '</div></div>';
         echo '<div id="ilsm-opportunity-view-all" class="ilsm-opportunity-view is-active">';
 
         if ( ! $scan ) {
@@ -919,40 +1012,41 @@ final class ILSM_Link_Opportunities {
             echo '</section></div></div>';
             return;
         }
-        if ( '8' !== (string) get_option( 'ilsm_opportunity_engine_version', '' ) ) {
-            echo '<div class="notice notice-warning inline ilsm-opportunity-engine-notice"><p><strong>' . esc_html__( 'Regenerate opportunities before inserting links.', 'dma-internlink-mapper' ) . '</strong> ' . esc_html__( 'Existing opportunities may reference titles, excerpts, existing links or unsupported widgets. The updated engine stores only technically insertable suggestions that meet the current minimum confidence and source-page link budget, respect minimum word distance, remove already-linked pairs, and exclude privacy, cookie, terms, legal, password-protected, and noindex pages according to Settings.', 'dma-internlink-mapper' ) . '</p></div>';
+        if ( '9' !== (string) get_option( 'ilsm_opportunity_engine_version', '' ) ) {
+            echo '<div class="notice notice-warning inline ilsm-opportunity-engine-notice"><p><strong>' . esc_html__( 'Regenerate opportunities before inserting links.', 'dma-internlink-mapper' ) . '</strong> ' . esc_html__( 'Existing opportunities were generated by an older ranking model. Regenerate to use contextual relevance plus bounded graph strength, destination need, Search Console page evidence, keyword-ownership/cannibalization checks and anchor-diversity guards, while preserving editor safety, link budgets, spacing and indexability rules.', 'dma-internlink-mapper' ) . '</p></div>';
         }
         echo '<div class="ilsm-opportunity-summary">';
-	        $kpi_meta = array(
-	            'new'      => array( 'fa-check-circle-o', __( 'Ready opportunities', 'dma-internlink-mapper' ), __( 'Ready to insert', 'dma-internlink-mapper' ) ),
-	            'inserted' => array( 'fa-link', __( 'Inserted links', 'dma-internlink-mapper' ), __( 'Already inserted', 'dma-internlink-mapper' ) ),
-	            'failed'   => array( 'fa-exclamation-triangle', __( 'Needs review', 'dma-internlink-mapper' ), __( 'Check manually', 'dma-internlink-mapper' ) ),
-	            'ignored'  => array( 'fa-ban', __( 'Ignored', 'dma-internlink-mapper' ), __( 'Not relevant', 'dma-internlink-mapper' ) ),
-	        );
+        $kpi_meta = array(
+            'new'      => array( 'fa-check-circle-o', __( 'Ready opportunities', 'dma-internlink-mapper' ), __( 'Ready to insert', 'dma-internlink-mapper' ) ),
+            'inserted' => array( 'fa-link', __( 'Inserted links', 'dma-internlink-mapper' ), __( 'Already inserted', 'dma-internlink-mapper' ) ),
+            'failed'   => array( 'fa-exclamation-triangle', __( 'Needs review', 'dma-internlink-mapper' ), __( 'Check manually', 'dma-internlink-mapper' ) ),
+            'ignored'  => array( 'fa-ban', __( 'Ignored', 'dma-internlink-mapper' ), __( 'Not relevant', 'dma-internlink-mapper' ) ),
+        );
         foreach ( $kpi_meta as $key => $meta ) {
-            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-            echo '<a class="ilsm-opportunity-kpi ilsm-kpi-' . esc_attr( $key ) . ' ' . ( $status === $key ? 'is-active' : '' ) . '" href="' . esc_url( add_query_arg( array( 'page' => 'ilsm-link-opportunities', 'status' => $key ), admin_url( 'admin.php' ) ) ) . '"><span class="ilsm-kpi-icon"><i class="fa ' . esc_attr( $meta[0] ) . '" aria-hidden="true"></i></span><span class="ilsm-kpi-copy"><span class="ilsm-kpi-label">' . esc_html( $meta[1] ) . '</span><strong>' . number_format_i18n( $counts[ $key ] ) . '</strong><small>' . esc_html( $meta[2] ) . '</small></span></a>';
+            echo '<a class="ilsm-opportunity-kpi ilsm-kpi-' . esc_attr( $key ) . ' ' . ( $status === $key ? 'is-active' : '' ) . '" href="' . esc_url( add_query_arg( array( 'page' => 'ilsm-link-opportunities', 'status' => $key ), admin_url( 'admin.php' ) ) ) . '"><span class="ilsm-kpi-icon"><i class="fa ' . esc_attr( $meta[0] ) . '" aria-hidden="true"></i></span><span class="ilsm-kpi-copy"><span class="ilsm-kpi-label">' . esc_html( $meta[1] ) . '</span><strong>' . esc_html( number_format_i18n( $counts[ $key ] ) ) . '</strong><small>' . esc_html( $meta[2] ) . '</small></span></a>';
         }
         $pages_table = ILSM_Database::checked_table( ILSM_Database::table( 'pages' ) );
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned mutable scan data must be read fresh; the table identifier and scan value are both passed through prepare().
         $analysis_total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE scan_id=%d', $pages_table, absint( $scan ) ) );
-	        echo '</div><section class="ilsm-panel ilsm-opportunity-generator"><div class="ilsm-opportunity-generator-head"><div class="ilsm-opportunity-generator-title"><span class="ilsm-opportunity-generator-icon"><i class="fa fa-magic" aria-hidden="true"></i></span><div><span class="ilsm-opportunity-generator-kicker">' . esc_html__( 'Local analysis · Content safe', 'dma-internlink-mapper' ) . '</span><h2>' . esc_html__( 'Opportunity discovery', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Builds suggestions from the latest completed scan without modifying content.', 'dma-internlink-mapper' ) . '</p></div></div></div>';
-	        /* translators: %s: localized number of pages eligible for opportunity analysis. */
-	        echo '<div id="ilsm-opportunity-discovery" class="ilsm-opportunity-discovery" data-total="' . esc_attr( $analysis_total ) . '" data-stage="0" hidden><div class="ilsm-opportunity-discovery-status"><div class="ilsm-opportunity-progress-ring" aria-hidden="true"><span id="ilsm-opportunity-percent">0%</span></div><div class="ilsm-opportunity-status-copy"><span class="ilsm-opportunity-live"><i class="fa fa-circle" aria-hidden="true"></i> ' . esc_html__( 'Live analysis', 'dma-internlink-mapper' ) . '</span><strong id="ilsm-opportunity-headline">' . sprintf( esc_html__( 'Ready to analyze %s pages', 'dma-internlink-mapper' ), esc_html( number_format_i18n( $analysis_total ) ) ) . '</strong><p id="ilsm-opportunity-stage" class="ilsm-opportunity-stage">' . esc_html__( 'Preparing the first analysis batch…', 'dma-internlink-mapper' ) . '</p></div><span class="ilsm-opportunity-elapsed"><i class="fa fa-clock-o" aria-hidden="true"></i><span id="ilsm-opportunity-elapsed">' . esc_html__( 'Elapsed: 0s', 'dma-internlink-mapper' ) . '</span></span></div><div class="ilsm-opportunity-progress-track" role="progressbar" aria-label="' . esc_attr__( 'Opportunity discovery progress', 'dma-internlink-mapper' ) . '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="ilsm-opportunity-progress-fill"></span></div><ol class="ilsm-opportunity-pipeline" aria-label="' . esc_attr__( 'Analysis stages', 'dma-internlink-mapper' ) . '"><li data-opportunity-step="1"><span><i class="fa fa-file-text-o" aria-hidden="true"></i></span><div><strong>' . esc_html__( 'Read eligible pages', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Body text and editor support', 'dma-internlink-mapper' ) . '</small></div></li><li data-opportunity-step="2"><span><i class="fa fa-crosshairs" aria-hidden="true"></i></span><div><strong>' . esc_html__( 'Score relevance', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Anchors, intent and confidence', 'dma-internlink-mapper' ) . '</small></div></li><li data-opportunity-step="3"><span><i class="fa fa-shield" aria-hidden="true"></i></span><div><strong>' . esc_html__( 'Verify safe insertion', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Existing links, spacing and budgets', 'dma-internlink-mapper' ) . '</small></div></li></ol><div class="ilsm-opportunity-discovery-body"><div class="ilsm-opportunity-discovery-meta"><div class="ilsm-opportunity-metric"><span class="ilsm-opportunity-metric-icon is-candidates"><i class="fa fa-filter" aria-hidden="true"></i></span><span><strong id="ilsm-opportunity-candidates">0</strong><small>' . esc_html__( 'Candidates checked', 'dma-internlink-mapper' ) . '</small></span></div><div class="ilsm-opportunity-metric"><span class="ilsm-opportunity-metric-icon is-found"><i class="fa fa-link" aria-hidden="true"></i></span><span><strong id="ilsm-opportunity-found">0</strong><small>' . esc_html__( 'Opportunities found', 'dma-internlink-mapper' ) . '</small></span></div></div><blockquote class="ilsm-opportunity-quote"><i class="fa fa-quote-left" aria-hidden="true"></i><div><p id="ilsm-opportunity-quote-text"></p><cite id="ilsm-opportunity-quote-author"></cite></div></blockquote></div><p class="ilsm-opportunity-discovery-note"><span><i class="fa fa-lock" aria-hidden="true"></i></span><span><strong>' . esc_html__( 'Analysis only—your content stays unchanged', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Keep this page open while WordPress checks editor support, existing links, confidence, spacing and link budgets.', 'dma-internlink-mapper' ) . '</small></span></p></div><span id="ilsm-opportunity-progress" class="screen-reader-text" aria-live="polite"></span></section>';
+        echo '</div><section class="ilsm-panel ilsm-opportunity-generator"><div class="ilsm-opportunity-generator-head"><div class="ilsm-opportunity-generator-title"><span class="ilsm-opportunity-generator-icon"><i class="fa fa-magic" aria-hidden="true"></i></span><div><span class="ilsm-opportunity-generator-kicker">' . esc_html__( 'Local analysis · Content safe', 'dma-internlink-mapper' ) . '</span><h2>' . esc_html__( 'Opportunity discovery', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Builds suggestions from the latest completed scan without modifying content.', 'dma-internlink-mapper' ) . '</p></div></div></div>';
+        /* translators: %s: localized number of pages eligible for opportunity analysis. */
+        echo '<div id="ilsm-opportunity-discovery" class="ilsm-opportunity-discovery" data-total="' . esc_attr( $analysis_total ) . '" data-stage="0" hidden><div class="ilsm-opportunity-discovery-status"><div class="ilsm-opportunity-progress-ring" aria-hidden="true"><span id="ilsm-opportunity-percent">0%</span></div><div class="ilsm-opportunity-status-copy"><span class="ilsm-opportunity-live"><i class="fa fa-circle" aria-hidden="true"></i> ' . esc_html__( 'Live analysis', 'dma-internlink-mapper' ) . '</span><strong id="ilsm-opportunity-headline">' . sprintf( esc_html__( 'Ready to analyze %s pages', 'dma-internlink-mapper' ), esc_html( number_format_i18n( $analysis_total ) ) ) . '</strong><p id="ilsm-opportunity-stage" class="ilsm-opportunity-stage">' . esc_html__( 'Preparing the first analysis batch…', 'dma-internlink-mapper' ) . '</p></div><span class="ilsm-opportunity-elapsed"><i class="fa fa-clock-o" aria-hidden="true"></i><span id="ilsm-opportunity-elapsed">' . esc_html__( 'Elapsed: 0s', 'dma-internlink-mapper' ) . '</span></span></div><div class="ilsm-opportunity-progress-track" role="progressbar" aria-label="' . esc_attr__( 'Opportunity discovery progress', 'dma-internlink-mapper' ) . '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="ilsm-opportunity-progress-fill"></span></div><ol class="ilsm-opportunity-pipeline" aria-label="' . esc_attr__( 'Analysis stages', 'dma-internlink-mapper' ) . '"><li data-opportunity-step="1"><span><i class="fa fa-file-text-o" aria-hidden="true"></i></span><div><strong>' . esc_html__( 'Read eligible pages', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Body text and editor support', 'dma-internlink-mapper' ) . '</small></div></li><li data-opportunity-step="2"><span><i class="fa fa-crosshairs" aria-hidden="true"></i></span><div><strong>' . esc_html__( 'Rank SEO value', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Context, graph, intent and ownership', 'dma-internlink-mapper' ) . '</small></div></li><li data-opportunity-step="3"><span><i class="fa fa-shield" aria-hidden="true"></i></span><div><strong>' . esc_html__( 'Verify safe insertion', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Existing links, spacing and budgets', 'dma-internlink-mapper' ) . '</small></div></li></ol><div class="ilsm-opportunity-discovery-body"><div class="ilsm-opportunity-discovery-meta"><div class="ilsm-opportunity-metric"><span class="ilsm-opportunity-metric-icon is-candidates"><i class="fa fa-filter" aria-hidden="true"></i></span><span><strong id="ilsm-opportunity-candidates">0</strong><small>' . esc_html__( 'Candidates checked', 'dma-internlink-mapper' ) . '</small></span></div><div class="ilsm-opportunity-metric"><span class="ilsm-opportunity-metric-icon is-found"><i class="fa fa-link" aria-hidden="true"></i></span><span><strong id="ilsm-opportunity-found">0</strong><small>' . esc_html__( 'Opportunities found', 'dma-internlink-mapper' ) . '</small></span></div></div><blockquote class="ilsm-opportunity-quote"><i class="fa fa-quote-left" aria-hidden="true"></i><div><p id="ilsm-opportunity-quote-text"></p><cite id="ilsm-opportunity-quote-author"></cite></div></blockquote></div><p class="ilsm-opportunity-discovery-note"><span><i class="fa fa-lock" aria-hidden="true"></i></span><span><strong>' . esc_html__( 'Analysis only—your content stays unchanged', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Keep this page open while WordPress checks context, graph signals, keyword ownership, editor support, existing links, spacing and link budgets.', 'dma-internlink-mapper' ) . '</small></span></p></div><span id="ilsm-opportunity-progress" class="screen-reader-text" aria-live="polite"></span></section>';
         echo '<form method="get" class="ilsm-opportunity-filters"><input type="hidden" name="page" value="ilsm-link-opportunities"><label><span>' . esc_html__( 'Search', 'dma-internlink-mapper' ) . '</span><input type="search" name="s" value="' . esc_attr( $query ) . '" placeholder="' . esc_attr__( 'Source, anchor or destination', 'dma-internlink-mapper' ) . '"></label><label><span>' . esc_html__( 'Status', 'dma-internlink-mapper' ) . '</span><select name="status">';
         foreach ( array( 'all' => __( 'All', 'dma-internlink-mapper' ), 'new' => __( 'Ready to insert', 'dma-internlink-mapper' ), 'inserted' => __( 'Inserted', 'dma-internlink-mapper' ), 'failed' => __( 'Failed', 'dma-internlink-mapper' ), 'reviewed' => __( 'Reviewed', 'dma-internlink-mapper' ), 'ignored' => __( 'Ignored', 'dma-internlink-mapper' ), 'undone' => __( 'Undone', 'dma-internlink-mapper' ) ) as $key => $label ) { echo '<option value="' . esc_attr( $key ) . '" ' . selected( $status, $key, false ) . '>' . esc_html( $label ) . '</option>'; }
         /* translators: %d: configured minimum confidence percentage required for insertion. */
-	        echo '</select></label><label class="ilsm-confidence-filter"><span>' . esc_html__( 'Minimum confidence', 'dma-internlink-mapper' ) . '</span><span class="ilsm-confidence-control"><input type="range" name="min_score" min="' . esc_attr( $configured_min ) . '" max="100" value="' . esc_attr( $min ) . '"><output>' . esc_html( $min ) . '%</output></span><small>' . sprintf( esc_html__( 'Configured insertion minimum: %d%%', 'dma-internlink-mapper' ), absint( $configured_min ) ) . '</small></label><button class="ilsm-btn ilsm-btn-primary">' . esc_html__( 'Apply filters', 'dma-internlink-mapper' ) . '</button></form>';
+        echo '</select></label><label class="ilsm-confidence-filter"><span>' . esc_html__( 'Minimum confidence', 'dma-internlink-mapper' ) . '</span><span class="ilsm-confidence-control"><input type="range" name="min_score" min="' . esc_attr( $configured_min ) . '" max="100" value="' . esc_attr( $min ) . '"><output>' . esc_html( $min ) . '%</output></span><small>' . sprintf( esc_html__( 'Configured insertion minimum: %d%%', 'dma-internlink-mapper' ), absint( $configured_min ) ) . '</small></label><button class="ilsm-btn ilsm-btn-primary">' . esc_html__( 'Apply filters', 'dma-internlink-mapper' ) . '</button></form>';
         $insert_settings = wp_parse_args( get_option( 'ilsm_settings', array() ), array( 'insert_dry_run' => 1 ) );
         $mode_label = ! empty( $insert_settings['insert_dry_run'] ) ? __( 'Preview Mode: no content changes', 'dma-internlink-mapper' ) : __( 'Live Mode: links are written to content', 'dma-internlink-mapper' );
         echo '<div class="ilsm-bulk-bar"><label><input type="checkbox" id="ilsm-select-all-opportunities"> ' . esc_html__( 'Select current page', 'dma-internlink-mapper' ) . '</label><button type="button" class="ilsm-btn ilsm-btn-primary" id="ilsm-insert-selected">' . esc_html__( 'Insert selected links', 'dma-internlink-mapper' ) . '</button><span class="ilsm-mode-badge ' . ( ! empty( $insert_settings['insert_dry_run'] ) ? 'is-dry-run' : 'is-live' ) . '">' . esc_html( $mode_label ) . '</span><span id="ilsm-bulk-progress" aria-live="polite"></span></div><section class="ilsm-panel ilsm-table-panel"><div class="ilsm-table-scroll"><table class="ilsm-table"><thead><tr><th><span class="screen-reader-text">' . esc_html__( 'Select', 'dma-internlink-mapper' ) . '</span></th><th>' . esc_html__( 'Source page', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Anchor found', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Destination', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Confidence', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Internal links', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Review', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';
         foreach ( (array) $rows as $row ) {
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-            $history_id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM ' . ILSM_Database::table( 'insertions' ) . ' WHERE opportunity_id=%d AND insertion_status=\'inserted\' ORDER BY id DESC LIMIT 1', $row->id ) );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current insertion history must be read fresh.
+            $history_id = (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM %i WHERE opportunity_id=%d AND insertion_status='inserted' ORDER BY id DESC LIMIT 1", ILSM_Database::table( 'insertions' ), $row->id ) );
             $eligible = 'new' === $row->status && (int) $row->score >= $min;
-	            /* translators: 1: Search Console clicks, 2: impressions, 3: average position. */
-	            $search_evidence = absint( $row->search_impressions ) ? '<small class="ilsm-row-url">' . sprintf( esc_html__( 'Search Console: %1$s clicks · %2$s impressions · position %3$s', 'dma-internlink-mapper' ), esc_html( number_format_i18n( absint( $row->search_clicks ) ) ), esc_html( number_format_i18n( absint( $row->search_impressions ) ) ), esc_html( number_format_i18n( (float) $row->search_position, 1 ) ) ) . '</small>' : '';
-	            echo '<tr data-opportunity-id="' . absint( $row->id ) . '" data-history-id="' . absint( $history_id ) . '"><td><input class="ilsm-opportunity-check" type="checkbox" ' . disabled( ! $eligible, true, false ) . ' aria-label="' . esc_attr__( 'Select opportunity', 'dma-internlink-mapper' ) . '"></td><td><strong>' . esc_html( html_entity_decode( $row->source_title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) . '</strong><small class="ilsm-row-url">' . esc_html( $row->source_type ) . '</small><p class="ilsm-opportunity-context">' . esc_html( $row->context_excerpt ) . '</p></td><td><span class="ilsm-anchor-chip">' . esc_html( $row->anchor_text ) . '</span></td><td><strong>' . esc_html( html_entity_decode( $row->target_title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) . '</strong>' . wp_kses_post( $search_evidence ) . '</td><td><span class="ilsm-confidence">' . absint( $row->score ) . '%</span></td><td><div class="ilsm-link-counts" aria-label="' . esc_attr__( 'Internal link counts', 'dma-internlink-mapper' ) . '"><span class="ilsm-link-count ilsm-link-count-out" title="' . esc_attr__( 'Outgoing links from source', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrow-up" aria-hidden="true"></i><span class="screen-reader-text">' . esc_html__( 'Outgoing from source:', 'dma-internlink-mapper' ) . ' </span><b class="ilsm-outgoing-count">' . absint( $row->source_outgoing_count ) . '</b></span><span class="ilsm-link-count ilsm-link-count-in" title="' . esc_attr__( 'Incoming links to destination', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrow-down" aria-hidden="true"></i><span class="screen-reader-text">' . esc_html__( 'Incoming to destination:', 'dma-internlink-mapper' ) . ' </span><b class="ilsm-incoming-count">' . absint( $row->target_incoming_count ) . '</b></span><span class="screen-reader-text ilsm-insertion-state">' . esc_html( ucfirst( $row->status ) ) . '</span></div></td><td><div class="ilsm-row-actions"><button type="button" class="ilsm-btn ilsm-btn-small ilsm-preview-opportunity" data-opportunity-id="' . absint( $row->id ) . '" aria-label="' . esc_attr__( 'Preview insertion location', 'dma-internlink-mapper' ) . '" title="' . esc_attr__( 'Preview insertion location', 'dma-internlink-mapper' ) . '"><span class="screen-reader-text">' . esc_html__( 'Preview insertion location', 'dma-internlink-mapper' ) . '</span></button>' . ( $eligible ? '<button type="button" class="ilsm-btn ilsm-btn-small ilsm-btn-primary ilsm-insert-opportunity">' . esc_html__( 'Insert link', 'dma-internlink-mapper' ) . '</button>' : '' ) . ( $history_id ? '<button type="button" class="ilsm-btn ilsm-btn-small ilsm-undo-opportunity">' . esc_html__( 'Undo', 'dma-internlink-mapper' ) . '</button>' : '' ) . '<a class="ilsm-btn ilsm-btn-small" href="' . esc_url( get_edit_post_link( $row->source_post_id ) ) . '">' . esc_html__( 'Open source', 'dma-internlink-mapper' ) . '</a><button type="button" class="ilsm-btn ilsm-btn-small ilsm-opportunity-status" data-status="reviewed">' . esc_html__( 'Reviewed', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-btn ilsm-btn-small ilsm-btn-ignore ilsm-opportunity-status" data-status="ignored">' . esc_html__( 'Ignore', 'dma-internlink-mapper' ) . '</button></div></td></tr>';
+            /* translators: 1: Search Console clicks, 2: impressions, 3: average position. */
+            $search_evidence = absint( $row->search_impressions ) ? '<small class="ilsm-row-url">' . sprintf( esc_html__( 'Search Console: %1$s clicks · %2$s impressions · position %3$s', 'dma-internlink-mapper' ), esc_html( number_format_i18n( absint( $row->search_clicks ) ) ), esc_html( number_format_i18n( absint( $row->search_impressions ) ) ), esc_html( number_format_i18n( (float) $row->search_position, 1 ) ) ) . '</small>' : '';
+            /* translators: 1: contextual relevance score, 2: strategic SEO score. */
+            $score_breakdown = sprintf( __( 'Context %1$d · Strategy %2$d', 'dma-internlink-mapper' ), absint( $row->context_score ), absint( $row->strategy_score ) );
+            echo '<tr data-opportunity-id="' . absint( $row->id ) . '" data-history-id="' . absint( $history_id ) . '"><td><input class="ilsm-opportunity-check" type="checkbox" ' . disabled( ! $eligible, true, false ) . ' aria-label="' . esc_attr__( 'Select opportunity', 'dma-internlink-mapper' ) . '"></td><td><strong>' . esc_html( html_entity_decode( $row->source_title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) . '</strong><small class="ilsm-row-url">' . esc_html( $row->source_type ) . '</small><p class="ilsm-opportunity-context">' . esc_html( $row->context_excerpt ) . '</p></td><td><span class="ilsm-anchor-chip">' . esc_html( $row->anchor_text ) . '</span></td><td><strong>' . esc_html( html_entity_decode( $row->target_title, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) . '</strong>' . wp_kses_post( $search_evidence ) . '</td><td><span class="ilsm-confidence" title="' . esc_attr( $row->reason ) . '">' . absint( $row->score ) . '%</span><small class="ilsm-score-breakdown">' . esc_html( $score_breakdown ) . '</small></td><td><div class="ilsm-link-counts" aria-label="' . esc_attr__( 'Internal link counts', 'dma-internlink-mapper' ) . '"><span class="ilsm-link-count ilsm-link-count-out" title="' . esc_attr__( 'Outgoing links from source', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrow-up" aria-hidden="true"></i><span class="screen-reader-text">' . esc_html__( 'Outgoing from source:', 'dma-internlink-mapper' ) . ' </span><b class="ilsm-outgoing-count">' . absint( $row->source_outgoing_count ) . '</b></span><span class="ilsm-link-count ilsm-link-count-in" title="' . esc_attr__( 'Incoming links to destination', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrow-down" aria-hidden="true"></i><span class="screen-reader-text">' . esc_html__( 'Incoming to destination:', 'dma-internlink-mapper' ) . ' </span><b class="ilsm-incoming-count">' . absint( $row->target_incoming_count ) . '</b></span><span class="screen-reader-text ilsm-insertion-state">' . esc_html( ucfirst( $row->status ) ) . '</span></div></td><td><div class="ilsm-row-actions"><button type="button" class="ilsm-btn ilsm-btn-small ilsm-preview-opportunity" data-opportunity-id="' . absint( $row->id ) . '" aria-label="' . esc_attr__( 'Preview insertion location', 'dma-internlink-mapper' ) . '" title="' . esc_attr__( 'Preview insertion location', 'dma-internlink-mapper' ) . '"><span class="screen-reader-text">' . esc_html__( 'Preview insertion location', 'dma-internlink-mapper' ) . '</span></button>' . ( $eligible ? '<button type="button" class="ilsm-btn ilsm-btn-small ilsm-btn-primary ilsm-insert-opportunity">' . esc_html__( 'Insert link', 'dma-internlink-mapper' ) . '</button>' : '' ) . ( $history_id ? '<button type="button" class="ilsm-btn ilsm-btn-small ilsm-undo-opportunity">' . esc_html__( 'Undo', 'dma-internlink-mapper' ) . '</button>' : '' ) . '<a class="ilsm-btn ilsm-btn-small" href="' . esc_url( get_edit_post_link( $row->source_post_id ) ) . '">' . esc_html__( 'Open source', 'dma-internlink-mapper' ) . '</a><button type="button" class="ilsm-btn ilsm-btn-small ilsm-opportunity-status" data-status="reviewed">' . esc_html__( 'Reviewed', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-btn ilsm-btn-small ilsm-btn-ignore ilsm-opportunity-status" data-status="ignored">' . esc_html__( 'Ignore', 'dma-internlink-mapper' ) . '</button></div></td></tr>';
         }
         if ( ! $rows ) {
             $summary = get_transient( self::generation_summary_key() );
@@ -970,20 +1064,19 @@ final class ILSM_Link_Opportunities {
                 );
                 echo '<tr><td colspan="7"><div class="ilsm-opportunity-empty">';
                 echo '<span class="ilsm-empty-icon"><i class="fa fa-search" aria-hidden="true"></i></span>';
-	                echo '<h3>' . esc_html__( 'No opportunities passed the current rules', 'dma-internlink-mapper' ) . '</h3>';
+                echo '<h3>' . esc_html__( 'No opportunities passed the current rules', 'dma-internlink-mapper' ) . '</h3>';
                 echo '<p>' . esc_html__( 'The analysis completed successfully, but no candidates met all current confidence, editor-safety, indexability, word-count, link-budget and spacing rules.', 'dma-internlink-mapper' ) . '</p>';
-                // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-                echo '<div class="ilsm-empty-summary"><div><strong>' . number_format_i18n( absint( $summary['checked'] ?? 0 ) ) . '</strong><span>' . esc_html__( 'Candidates checked', 'dma-internlink-mapper' ) . '</span></div><div><strong>0</strong><span>' . esc_html__( 'Ready opportunities', 'dma-internlink-mapper' ) . '</span></div><div><strong>' . absint( $summary['minimum_confidence'] ?? 0 ) . '%</strong><span>' . esc_html__( 'Minimum confidence', 'dma-internlink-mapper' ) . '</span></div></div>';
-	                $rejected_counts  = array_map( 'absint', (array) ( $summary['rejected'] ?? array() ) );
-	                $maximum_rejected = max( array_merge( array( 1 ), $rejected_counts ) );
-	                echo '<div class="ilsm-reject-grid" aria-label="' . esc_attr__( 'Reasons candidates were rejected', 'dma-internlink-mapper' ) . '">';
-	                foreach ( $reasons as $key => $label ) {
-	                    $count = absint( $summary['rejected'][ $key ] ?? 0 );
-	                    $percentage = $maximum_rejected ? min( 100, max( 4, (int) round( $count / $maximum_rejected * 100 ) ) ) : 0;
-	                    if ( $count ) { echo '<div><span>' . esc_html( $label ) . '</span><span class="ilsm-reject-bar" aria-hidden="true"><i style="width:' . esc_attr( $percentage ) . '%"></i></span><strong>' . esc_html( number_format_i18n( $count ) ) . '</strong></div>'; }
-	                }
+                echo '<div class="ilsm-empty-summary"><div><strong>' . esc_html( number_format_i18n( absint( $summary['checked'] ?? 0 ) ) ) . '</strong><span>' . esc_html__( 'Candidates checked', 'dma-internlink-mapper' ) . '</span></div><div><strong>0</strong><span>' . esc_html__( 'Ready opportunities', 'dma-internlink-mapper' ) . '</span></div><div><strong>' . absint( $summary['minimum_confidence'] ?? 0 ) . '%</strong><span>' . esc_html__( 'Minimum confidence', 'dma-internlink-mapper' ) . '</span></div></div>';
+                $rejected_counts  = array_map( 'absint', (array) ( $summary['rejected'] ?? array() ) );
+                $maximum_rejected = max( array_merge( array( 1 ), $rejected_counts ) );
+                echo '<div class="ilsm-reject-grid" aria-label="' . esc_attr__( 'Reasons candidates were rejected', 'dma-internlink-mapper' ) . '">';
+                foreach ( $reasons as $key => $label ) {
+                    $count = absint( $summary['rejected'][ $key ] ?? 0 );
+                    $percentage = $maximum_rejected ? min( 100, max( 4, (int) round( $count / $maximum_rejected * 100 ) ) ) : 0;
+                    if ( $count ) { echo '<div><span>' . esc_html( $label ) . '</span><span class="ilsm-reject-bar" aria-hidden="true"><i style="width:' . esc_attr( $percentage ) . '%"></i></span><strong>' . esc_html( number_format_i18n( $count ) ) . '</strong></div>'; }
+                }
                 echo '</div>';
-                echo '<details class="ilsm-confidence-help"><summary>' . esc_html__( 'How confidence is calculated', 'dma-internlink-mapper' ) . '</summary><p>' . esc_html__( 'Confidence is calculated locally from semantic term overlap, exact crawler phrase matches, anchor quality and priority, destination focus-keyphrase overlap, meaningful shared terms, indexed keyword relevance, and prior accepted or ignored feedback. The final score is capped at 100. Technical eligibility checks such as noindex status, duplicate links, editor support, word count, link budget and link spacing are hard requirements and are not bypassed by a high confidence score.', 'dma-internlink-mapper' ) . '</p></details>';
+                echo '<details class="ilsm-confidence-help"><summary>' . esc_html__( 'How confidence is calculated', 'dma-internlink-mapper' ) . '</summary><p>' . esc_html__( 'Confidence is calculated locally in two layers. Contextual relevance remains the gatekeeper and uses semantic term overlap, exact crawler phrase matches, natural-anchor quality, focus-keyphrase overlap, meaningful shared terms, search intent and prior feedback. Strategic ranking then uses internal graph strength, destination link need, imported Search Console page evidence, keyword ownership/cannibalization and anchor diversity. Technical eligibility checks such as noindex status, duplicate links, editor support, word count, link budget and link spacing remain hard requirements and cannot be bypassed by a high score.', 'dma-internlink-mapper' ) . '</p></details>';
                 echo '<div class="ilsm-empty-actions"><a class="ilsm-btn ilsm-btn-primary" href="' . esc_url( admin_url( 'admin.php?page=ilsm-settings#ilsm-safe-link-insertion' ) ) . '">' . esc_html__( 'Review insertion settings', 'dma-internlink-mapper' ) . '</a><button type="button" class="ilsm-btn" id="ilsm-empty-regenerate">' . esc_html__( 'Generate again', 'dma-internlink-mapper' ) . '</button><a class="ilsm-btn" href="' . esc_url( admin_url( 'admin.php?page=ilsm-dashboard' ) ) . '">' . esc_html__( 'Run a fresh scan', 'dma-internlink-mapper' ) . '</a></div>';
                 echo '</div></td></tr>';
             } else {
@@ -1003,17 +1096,36 @@ final class ILSM_Link_Opportunities {
                 'next_text' => '<span class="screen-reader-text">' . esc_html__( 'Next', 'dma-internlink-mapper' ) . '</span><i class="fa fa-angle-right" aria-hidden="true"></i>',
                 'type' => 'array',
             ) );
-            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-            if ( $pagination ) { echo '<nav class="ilsm-pagination" aria-label="Link opportunities pagination">' . implode( '', array_map( static function( $link ) { return '<span class="ilsm-page-item">' . wp_kses_post( $link ) . '</span>'; }, $pagination ) ) . '</nav>'; }
+            if ( $pagination ) { $pagination_html = '<nav class="ilsm-pagination" aria-label="Link opportunities pagination">' . implode( '', array_map( static function( $link ) { return '<span class="ilsm-page-item">' . wp_kses_post( $link ) . '</span>'; }, $pagination ) ) . '</nav>'; echo wp_kses( $pagination_html, self::admin_fragment_allowed_html() ); }
         }
         echo '</section>';
         $history = self::get_history_page( $scan, 'all', 1, 25 );
         echo '<section class="ilsm-panel ilsm-table-panel ilsm-insertion-history-panel"><div class="ilsm-panel-head"><div><h2>' . esc_html__( 'Insertion history', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Live links and failed attempts are separated so the Ready list stays actionable.', 'dma-internlink-mapper' ) . '</p></div><div class="ilsm-history-tabs" role="tablist" aria-label="' . esc_attr__( 'Insertion history filters', 'dma-internlink-mapper' ) . '"><button type="button" class="ilsm-history-tab is-active" data-history-status="all" role="tab" aria-selected="true">' . esc_html__( 'All', 'dma-internlink-mapper' ) . ' <span>' . absint( $history['counts']['all'] ) . '</span></button><button type="button" class="ilsm-history-tab" data-history-status="live" role="tab" aria-selected="false">' . esc_html__( 'Live', 'dma-internlink-mapper' ) . ' <span>' . absint( $history['counts']['live'] ) . '</span></button><button type="button" class="ilsm-history-tab" data-history-status="errors" role="tab" aria-selected="false">' . esc_html__( 'Errors', 'dma-internlink-mapper' ) . ' <span>' . absint( $history['counts']['errors'] ) . '</span></button></div></div><div class="ilsm-table-scroll"><table class="ilsm-table"><thead><tr><th>' . esc_html__( 'When', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'User', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Source', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Anchor', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Destination', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Result', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Actions', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody id="ilsm-insertion-history-body">';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Built by history_rows_html() with context-specific escaping.
-        echo $history['html'];
+        echo wp_kses( $history['html'], self::admin_fragment_allowed_html() );
         echo '</tbody></table></div><div class="ilsm-history-load-wrap"><button type="button" class="ilsm-btn" id="ilsm-history-load-more" data-history-page="1"' . disabled( ! $history['has_more'], true, false ) . '>' . esc_html__( 'Load more history', 'dma-internlink-mapper' ) . '</button><span id="ilsm-history-status" aria-live="polite"></span></div></section></div><div id="ilsm-insert-modal" class="ilsm-modal ilsm-insert-modal-modern" hidden role="dialog" aria-modal="true" aria-labelledby="ilsm-insert-modal-title" aria-describedby="ilsm-insert-modal-description"><div class="ilsm-modal-card" tabindex="-1"><button type="button" class="ilsm-modal-close" aria-label="' . esc_attr__( 'Close', 'dma-internlink-mapper' ) . '">&times;</button><div class="ilsm-modal-titlebar"><span class="ilsm-modal-status-icon"><i class="fa fa-check-circle" aria-hidden="true"></i></span><div><h2 id="ilsm-insert-modal-title">' . esc_html__( 'Confirm internal-link insertion', 'dma-internlink-mapper' ) . '</h2><p id="ilsm-insert-modal-description">' . esc_html__( 'Review verified results for the selected source, anchor and destination.', 'dma-internlink-mapper' ) . '</p></div></div><div id="ilsm-insert-preview" aria-live="polite" aria-atomic="false"></div><div class="ilsm-modal-footer"><label class="ilsm-confirm-check"><input type="checkbox" id="ilsm-confirm-insert"> <span><i class="fa fa-info-circle" aria-hidden="true"></i> ' . esc_html__( 'I reviewed the source, anchor and destination.', 'dma-internlink-mapper' ) . '</span></label><div class="ilsm-modal-actions"><button type="button" class="ilsm-btn" data-ilsm-close>' . esc_html__( 'Cancel', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-btn ilsm-btn-primary" id="ilsm-confirm-insert-button" disabled>' . esc_html__( 'Insert verified link', 'dma-internlink-mapper' ) . '</button></div></div></div></div>';
         self::render_target_search( $scan );
         echo '</div>';
+    }
+
+    /**
+     * HTML allowed when rendering plugin-owned insertion-history and pagination fragments.
+     * Returned helper markup is filtered again at the final output boundary.
+     *
+     * @return array<string,array<string,bool>>
+     */
+    private static function admin_fragment_allowed_html() {
+        return array(
+            'a'      => array( 'href' => true, 'class' => true, 'target' => true, 'rel' => true, 'aria-label' => true ),
+            'button' => array( 'type' => true, 'class' => true, 'data-history-id' => true, 'disabled' => true ),
+            'div'    => array( 'class' => true ),
+            'i'      => array( 'class' => true, 'aria-hidden' => true ),
+            'nav'    => array( 'class' => true, 'aria-label' => true ),
+            'small'  => array( 'class' => true ),
+            'span'   => array( 'class' => true, 'aria-current' => true ),
+            'strong' => array(),
+            'td'     => array( 'class' => true, 'colspan' => true ),
+            'tr'     => array( 'class' => true, 'data-history-status' => true ),
+        );
     }
 
     /** Return one bounded insertion-history page and truthful status counts. */
@@ -1099,7 +1211,11 @@ final class ILSM_Link_Opportunities {
         $scan   = ILSM_Database::latest_completed_scan_id();
         $status = sanitize_key( wp_unslash( $_POST['history_status'] ?? 'all' ) );
         $page   = max( 1, absint( wp_unslash( $_POST['history_page'] ?? 1 ) ) );
-        wp_send_json_success( self::get_history_page( $scan, $status, $page, 25 ) );
+        $history = self::get_history_page( $scan, $status, $page, 25 );
+        if ( isset( $history['html'] ) ) {
+            $history['html'] = wp_kses( $history['html'], self::admin_fragment_allowed_html() );
+        }
+        wp_send_json_success( $history );
     }
 
     private static function render_target_search( $scan ) {
@@ -1113,9 +1229,9 @@ final class ILSM_Link_Opportunities {
         $targets = array();
         if ( $scan && $enabled_types ) {
             $placeholders = implode( ',', array_fill( 0, count( $enabled_types ), '%s' ) );
-            $target_args = array_merge( array( $scan ), $enabled_types );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-            $targets = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,title,post_type,url FROM {$pages} WHERE scan_id=%d AND post_type IN ({$placeholders}) ORDER BY title ASC LIMIT 3000", $target_args ) );
+            $target_args = array_merge( array( $pages, $scan ), $enabled_types );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- The post-type placeholder list is generated from enabled post types; identifier and values are passed to prepare().
+            $targets = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,title,post_type,url FROM %i WHERE scan_id=%d AND post_type IN ({$placeholders}) ORDER BY title ASC LIMIT 3000", $target_args ) );
         }
         $types = array();
         foreach ( $enabled_types as $type_slug ) {

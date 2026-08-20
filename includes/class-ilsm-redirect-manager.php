@@ -43,25 +43,25 @@ final class ILSM_Redirect_Manager {
 		$cursor = $destination_path;
 		for ( $depth = 0; $depth < 10; $depth++ ) {
 			if ( hash_equals( $source_path, $cursor ) ) { return new WP_Error( 'redirect_loop', __( 'This redirect would create a loop.', 'dma-internlink-mapper' ) ); }
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Ten bounded prepared lookups in an allowlisted table for loop detection.
-			$next = $wpdb->get_var( $wpdb->prepare( "SELECT destination_url FROM {$table} WHERE source_hash=%s LIMIT 1", hash( 'sha256', $cursor ) ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned redirect records require direct reads/writes and must reflect current state.
+			$next = $wpdb->get_var( $wpdb->prepare( 'SELECT destination_url FROM %i WHERE source_hash=%s LIMIT 1', $table, hash( 'sha256', $cursor ) ) );
 			if ( ! $next ) { break; }
 			$cursor = self::canonical_path( $next );
 		}
 		if ( 10 === $depth ) { return new WP_Error( 'redirect_chain', __( 'The destination already has an excessive redirect chain.', 'dma-internlink-mapper' ) ); }
 		$now = current_time( 'mysql', true );
 		$source_url_hash = hash( 'sha256', ILSM_Link_Normalizer::normalize_any( home_url( $source_path ) ) );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Fully prepared administrator-reviewed upsert in an allowlisted plugin table; routing state must not be stale-cached.
-		$ok = $wpdb->query( $wpdb->prepare( "INSERT INTO {$table} (source_path,source_hash,source_url_hash,destination_url,status_code,created_by,created_at,updated_at) VALUES (%s,%s,%s,%s,%d,%d,%s,%s) ON DUPLICATE KEY UPDATE source_url_hash=VALUES(source_url_hash),destination_url=VALUES(destination_url),status_code=VALUES(status_code),updated_at=VALUES(updated_at)", $source_path, hash( 'sha256', $source_path ), $source_url_hash, esc_url_raw( $destination_url ), $status_code, get_current_user_id(), $now, $now ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned redirect records require direct reads/writes and must reflect current state.
+		$ok = $wpdb->query( $wpdb->prepare( 'INSERT INTO %i (source_path,source_hash,source_url_hash,destination_url,status_code,created_by,created_at,updated_at) VALUES (%s,%s,%s,%s,%d,%d,%s,%s) ON DUPLICATE KEY UPDATE source_url_hash=VALUES(source_url_hash),destination_url=VALUES(destination_url),status_code=VALUES(status_code),updated_at=VALUES(updated_at)', $table, $source_path, hash( 'sha256', $source_path ), $source_url_hash, esc_url_raw( $destination_url ), $status_code, get_current_user_id(), $now, $now ) );
 		return false === $ok ? new WP_Error( 'database_error', __( 'The redirect could not be saved.', 'dma-internlink-mapper' ) ) : true;
 	}
 
-	/** Backfill URL hashes for redirects created before database version 1.9. */
+	/** Backfill URL hashes for legacy redirect rows that do not yet have them. */
 	public static function reconcile_source_hashes() {
 		global $wpdb;
 		$table = ILSM_Database::table( 'redirects' );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded compatibility migration over an allowlisted plugin table.
-		$rows = $wpdb->get_results( "SELECT id,source_path FROM {$table} WHERE source_url_hash='' ORDER BY id ASC LIMIT 200", ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned redirect records require direct reads/writes and must reflect current state.
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_path FROM %i WHERE source_url_hash='' ORDER BY id ASC LIMIT 200", $table ), ARRAY_A );
 		foreach ( $rows as $row ) {
 			$normalized = ILSM_Link_Normalizer::normalize_any( home_url( $row['source_path'] ) );
 			if ( $normalized ) { /* phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded migration write to one plugin-owned row. */ $wpdb->update( $table, array( 'source_url_hash' => hash( 'sha256', $normalized ) ), array( 'id' => absint( $row['id'] ) ), array( '%s' ), array( '%d' ) ); }
@@ -70,13 +70,15 @@ final class ILSM_Redirect_Manager {
 
 	public static function maybe_redirect() {
 		if ( is_admin() || wp_doing_ajax() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) { return; }
-		if ( version_compare( (string) get_option( 'ilsm_db_version', '0' ), '1.8.0', '<' ) ) { return; }
+		if ( version_compare( (string) get_option( 'ilsm_db_version', '0' ), ILSM_DB_VERSION, '<' ) ) { return; }
+		$signature = (string) get_option( 'ilsm_schema_signature', '' );
+		if ( ! defined( 'ILSM_SCHEMA_SIGNATURE' ) || ! hash_equals( ILSM_SCHEMA_SIGNATURE, $signature ) ) { return; }
 		global $wpdb;
 		$path = self::canonical_path( wp_unslash( $_SERVER['REQUEST_URI'] ?? '/' ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- canonical_path strips the query, normalizes slashes, and rejects unsafe paths before use.
 		if ( ! $path || self::protected_path( $path ) ) { return; }
 		$table = ILSM_Database::table( 'redirects' );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- One prepared indexed lookup in an allowlisted table; object cache could serve stale routing.
-		$row = $wpdb->get_row( $wpdb->prepare( "SELECT destination_url,status_code FROM {$table} WHERE source_hash=%s AND source_path=%s LIMIT 1", hash( 'sha256', $path ), $path ), ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned redirect records require direct reads/writes and must reflect current state.
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT destination_url,status_code FROM %i WHERE source_hash=%s AND source_path=%s LIMIT 1', $table, hash( 'sha256', $path ), $path ), ARRAY_A );
 		if ( ! $row || ! self::is_same_site_url( $row['destination_url'] ) ) { return; }
 		wp_safe_redirect( $row['destination_url'], in_array( absint( $row['status_code'] ), array( 301, 302 ), true ) ? absint( $row['status_code'] ) : 302, 'DMA InternLink Mapper' );
 		exit;
@@ -94,8 +96,8 @@ final class ILSM_Redirect_Manager {
 	public static function render_admin_table() {
 		global $wpdb;
 		$table = ILSM_Database::table( 'redirects' );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded report from an allowlisted plugin table.
-		$rows = $wpdb->get_results( "SELECT id,source_path,destination_url,status_code FROM {$table} ORDER BY id DESC LIMIT 100", ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned redirect records require direct reads/writes and must reflect current state.
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT id,source_path,destination_url,status_code FROM %i ORDER BY id DESC LIMIT 100', $table ), ARRAY_A );
 		echo '<section class="ilsm-panel" id="ilsm-managed-redirects"><div class="ilsm-panel-head"><div><h2>' . esc_html__( 'Managed SEO Redirects', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Exact-path redirects created by DMA. Delete restores the old URL behavior immediately.', 'dma-internlink-mapper' ) . '</p></div></div>';
 		if ( ! $rows ) { echo '<p>' . esc_html__( 'No DMA redirects have been created.', 'dma-internlink-mapper' ) . '</p></section>'; return; }
 			echo '<div class="ilsm-table-scroll"><table class="widefat striped"><thead><tr><th>' . esc_html__( 'Old path', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Destination', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Type', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Action', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';

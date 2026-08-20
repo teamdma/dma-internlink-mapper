@@ -160,6 +160,9 @@ class ILSM_Activator {
             anchor_text varchar(190) NOT NULL,
             context_excerpt varchar(700) NOT NULL DEFAULT '',
             score tinyint unsigned NOT NULL DEFAULT 0,
+            context_score tinyint unsigned NOT NULL DEFAULT 0,
+            strategy_score tinyint unsigned NOT NULL DEFAULT 0,
+            score_details text NULL,
             reason varchar(500) NOT NULL DEFAULT '',
             status varchar(20) NOT NULL DEFAULT 'new',
             created_at datetime NOT NULL,
@@ -251,6 +254,30 @@ class ILSM_Activator {
             PRIMARY KEY  (lock_name),
             KEY expires_at (expires_at)
         ) ENGINE=InnoDB {$charset};" );
+
+        // Never mark a migration current when dbDelta only partially succeeded.
+        // The version/signature options are written later, after the physical
+        // schema has been verified against the columns the runtime requires.
+        $schema_status = ILSM_Database::schema_status();
+        if ( empty( $schema_status['healthy'] ) ) {
+            $parts = array();
+            if ( ! empty( $schema_status['missing_tables'] ) ) {
+                $parts[] = 'tables: ' . implode( ', ', array_map( 'sanitize_key', $schema_status['missing_tables'] ) );
+            }
+            if ( ! empty( $schema_status['missing_columns'] ) ) {
+                foreach ( $schema_status['missing_columns'] as $table_name => $columns ) {
+                    $parts[] = sanitize_key( $table_name ) . ' columns: ' . implode( ', ', array_map( 'sanitize_key', $columns ) );
+                }
+            }
+            throw new RuntimeException(
+                sprintf(
+                    /* translators: %s: list of missing plugin database tables or columns. */
+                    esc_html__( 'DMA InternLink Mapper database schema is incomplete (%s).', 'dma-internlink-mapper' ),
+                    esc_html( implode( '; ', $parts ) )
+                )
+            );
+        }
+
         $role = get_role( 'administrator' );
         if ( $role ) {
             foreach ( array( 'ilsm_run_scans','ilsm_view_reports','ilsm_export_reports','ilsm_manage_settings','ilsm_insert_links','ilsm_delete_scan_data' ) as $cap ) {
@@ -293,7 +320,8 @@ class ILSM_Activator {
             update_option( 'ilsm_settings', $settings, false );
             update_option( 'ilsm_opportunity_engine_version', '', false );
         }
-        update_option( 'ilsm_db_version', defined( 'ILSM_DB_VERSION' ) ? ILSM_DB_VERSION : '1.5.0', false );
+        update_option( 'ilsm_db_version', defined( 'ILSM_DB_VERSION' ) ? ILSM_DB_VERSION : '1.0.0', false );
+        update_option( 'ilsm_schema_signature', defined( 'ILSM_SCHEMA_SIGNATURE' ) ? ILSM_SCHEMA_SIGNATURE : 'ilsm-schema-20260820-a', false );
     }
 
     /**
@@ -324,11 +352,15 @@ class ILSM_Activator {
         wp_clear_scheduled_hook( 'ilsm_broken_link_monitor' );
         global $wpdb;
         $table = $wpdb->prefix . 'ilsm_locks';
+        $like  = $wpdb->esc_like( $table );
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-        if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) !== $table ) {
+        if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $like ) ) !== $table ) {
             return;
         }
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-        $wpdb->query( "DELETE FROM {$table} WHERE lock_name LIKE 'scan_%' OR lock_name LIKE 'insert_%' OR lock_name LIKE 'broken_%'" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist and mutable operation state must not be cached.
+        $scan_like   = $wpdb->esc_like( 'scan_' ) . '%';
+        $insert_like = $wpdb->esc_like( 'insert_' ) . '%';
+        $broken_like = $wpdb->esc_like( 'broken_' ) . '%';
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Clear only plugin-owned transient operation locks during deactivation.
+        $wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE lock_name LIKE %s OR lock_name LIKE %s OR lock_name LIKE %s', $table, $scan_like, $insert_like, $broken_like ) );
     }
 }
