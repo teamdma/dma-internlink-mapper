@@ -53,38 +53,29 @@ final class ILSM_SEO_Provider_AIOSEO implements ILSM_SEO_Provider_Interface {
         return $row ? esc_url_raw( (string) ( $row['canonical_url'] ?? '' ) ) : '';
     }
 
-    /** Read only columns that exist in the installed AIOSEO schema. */
+    /** Read one provider row only when the optional AIOSEO table exists. */
     private function row( $post_id ) {
         global $wpdb;
         static $rows = array();
-        static $columns = null;
+        static $table_available = null;
 
         $post_id = absint( $post_id );
         if ( ! $post_id ) { return array(); }
         if ( isset( $rows[ $post_id ] ) ) { return $rows[ $post_id ]; }
 
         $table = $wpdb->prefix . 'aioseo_posts';
-        if ( null === $columns ) {
+        if ( null === $table_available ) {
             $like = $wpdb->esc_like( $table );
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only optional-provider schema discovery is cached per request.
             $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $like ) );
-            if ( $table !== $exists ) {
-                $columns = array();
-            } else {
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only optional-provider schema discovery is cached per request.
-                $columns = array_map( 'sanitize_key', (array) $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $table ) ) );
-            }
+            $table_available = $table === $exists;
         }
-        if ( empty( $columns ) ) { return $rows[ $post_id ] = array(); }
+        if ( ! $table_available ) { return $rows[ $post_id ] = array(); }
 
-        $wanted = array( 'focus_keyword', 'additional_keywords', 'keyphrases', 'robots_default', 'robots_noindex', 'canonical_url' );
-        $selected = array_values( array_intersect( $wanted, $columns ) );
-        if ( empty( $selected ) ) { return $rows[ $post_id ] = array(); }
-
-        // Identifiers are selected exclusively from the fixed $wanted allowlist.
-        $select = implode( ',', array_map( static function( $column ) { return '`' . $column . '`'; }, $selected ) );
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Optional-provider table is verified above and selected column identifiers come exclusively from the fixed allowlist.
-        $row = $wpdb->get_row( $wpdb->prepare( "SELECT {$select} FROM %i WHERE post_id=%d LIMIT 1", $table, $post_id ), ARRAY_A );
+        // Selecting one provider row avoids constructing a dynamic identifier list.
+        // Only the fixed keys consumed by this adapter are read from the result.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Optional-provider metadata is read-only and cached per request.
+        $row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE post_id=%d LIMIT 1', $table, $post_id ), ARRAY_A );
         return $rows[ $post_id ] = is_array( $row ) ? $row : array();
     }
 
