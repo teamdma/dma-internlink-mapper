@@ -24,6 +24,19 @@ final class ILSM_Search_Console_Import {
 		exit;
 	}
 
+	public static function handle_delete() {
+		self::authorize( 'ilsm_delete_search_console_csv' );
+
+		global $wpdb;
+		$table = ILSM_Database::table( 'search_console_urls' );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Explicit administrator action deletes only the plugin-owned imported Search Console dataset.
+		if ( false === $wpdb->query( $wpdb->prepare( 'DELETE FROM %i', $table ) ) ) {
+			self::redirect( 'database_failed' );
+		}
+
+		self::redirect( 'deleted' );
+	}
+
 	public static function handle_import() {
 		self::authorize( 'ilsm_import_search_console_csv' );
 		$file = isset( $_FILES['search_console_csv'] ) && is_array( $_FILES['search_console_csv'] ) ? $_FILES['search_console_csv'] : array(); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- authorize() verifies this action's nonce first; the PHP-managed upload is validated and never retained.
@@ -147,26 +160,47 @@ final class ILSM_Search_Console_Import {
 	private static function decimal_number( $value ) { $value = str_replace( ',', '.', preg_replace( '/[^0-9,.-]/', '', (string) $value ) ); return max( 0, min( 99999999.99, round( (float) $value, 2 ) ) ); }
 
 	private static function replace_dataset( $rows ) {
-		global $wpdb; $table = ILSM_Database::table( 'search_console_urls' );
+		global $wpdb;
+		$table = ILSM_Database::table( 'search_console_urls' );
 		if ( ! ILSM_Database::begin_transaction() ) { return false; }
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Atomic plugin-owned dataset replacement; the table identifier comes from ILSM_Database's strict allowlist.
-		if ( false === $wpdb->query( "DELETE FROM {$table}" ) ) { ILSM_Database::rollback(); return false; }
-		$now = current_time( 'mysql', true );
-		foreach ( array_chunk( $rows, 100, true ) as $chunk ) {
-			$values = array(); $args = array();
-			foreach ( $chunk as $hash => $row ) { $values[] = '(%s,%s,%d,%d,%f,%d,NULL,%s)'; array_push( $args, $hash, $row['url'], $row['clicks'], $row['impressions'], $row['position'], 0, $now ); }
-			$sql = "INSERT INTO {$table} (url_hash,url,clicks,impressions,position,http_status,checked_at,imported_at) VALUES " . implode( ',', $values );
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin identifier is allowlisted; every row value uses a placeholder in a bounded chunk.
-			if ( false === $wpdb->query( $wpdb->prepare( $sql, $args ) ) ) { ILSM_Database::rollback(); return false; }
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Replaces only the plugin-owned imported Search Console dataset inside the current transaction.
+		if ( false === $wpdb->query( $wpdb->prepare( 'DELETE FROM %i', $table ) ) ) {
+			ILSM_Database::rollback();
+			return false;
 		}
+
+		$now = current_time( 'mysql', true );
+		foreach ( $rows as $hash => $row ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Plugin-owned import table; each row is validated before this transaction and inserted through wpdb::insert() format placeholders.
+			$inserted = $wpdb->insert(
+				$table,
+				array(
+					'url_hash'    => (string) $hash,
+					'url'         => (string) $row['url'],
+					'clicks'      => absint( $row['clicks'] ),
+					'impressions' => absint( $row['impressions'] ),
+					'position'    => (float) $row['position'],
+					'http_status' => 0,
+					'checked_at'  => null,
+					'imported_at' => $now,
+				),
+				array( '%s', '%s', '%d', '%d', '%f', '%d', '%s', '%s' )
+			);
+			if ( false === $inserted ) {
+				ILSM_Database::rollback();
+				return false;
+			}
+		}
+
 		return ILSM_Database::commit();
 	}
 
 	/** Shared, read-only metrics source for plugin reports and ranking. */
 	public static function metrics_for_url( $url ) {
 		global $wpdb; $url = self::same_site_url( $url ); if ( ! $url ) { return array(); }
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- The table identifier comes from the plugin's strict allowlist and the URL hash is prepared.
-		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT clicks,impressions,position,http_status,checked_at FROM ' . ILSM_Database::table( 'search_console_urls' ) . ' WHERE url_hash=%s', hash( 'sha256', $url ) ), ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned imported Search Console data is mutable and must reflect the current local dataset.
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT clicks,impressions,position,http_status,checked_at FROM %i WHERE url_hash=%s', ILSM_Database::table( 'search_console_urls' ), hash( 'sha256', $url ) ), ARRAY_A );
 		return is_array( $row ) ? $row : array();
 	}
 
@@ -183,8 +217,8 @@ final class ILSM_Search_Console_Import {
 		$table = ILSM_Database::table( 'search_console_urls' );
 		foreach ( array_chunk( array_keys( $normalized ), 200 ) as $hashes ) {
 			$placeholders = implode( ',', array_fill( 0, count( $hashes ), '%s' ) );
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded indexed lookup; runtime placeholders are paired with validated hashes and the table identifier is allowlisted.
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT url_hash,clicks,impressions,position,http_status,checked_at FROM {$table} WHERE url_hash IN ({$placeholders})", $hashes ), ARRAY_A );
+			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic IN placeholders are generated from at most 200 validated SHA-256 hashes; the identifier and every hash are passed through wpdb::prepare().
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT url_hash,clicks,impressions,position,http_status,checked_at FROM %i WHERE url_hash IN ({$placeholders})", array_merge( array( $table ), $hashes ) ), ARRAY_A );
 			foreach ( (array) $rows as $row ) {
 				$hash = (string) ( $row['url_hash'] ?? '' );
 				if ( isset( $normalized[ $hash ] ) ) { $out[ $normalized[ $hash ] ] = $row; }
@@ -193,12 +227,11 @@ final class ILSM_Search_Console_Import {
 		return $out;
 	}
 
-	public static function handle_delete() { self::authorize( 'ilsm_delete_search_console_csv' ); global $wpdb; $table = ILSM_Database::table( 'search_console_urls' ); /* phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Nonce-authorized deletion from an allowlisted plugin table. */ $wpdb->query( "DELETE FROM {$table}" ); self::redirect( 'deleted' ); }
 
 	public static function render() {
 		global $wpdb; $table = ILSM_Database::table( 'search_console_urls' );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Small aggregate over an allowlisted plugin-owned table.
-		$summary = $wpdb->get_row( "SELECT COUNT(*) total,SUM(clicks) clicks,SUM(impressions) impressions,MAX(imported_at) imported_at FROM {$table}", ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned imported Search Console data is mutable and must reflect the current local dataset.
+		$summary = $wpdb->get_row( $wpdb->prepare( 'SELECT COUNT(*) total,SUM(clicks) clicks,SUM(impressions) impressions,MAX(imported_at) imported_at FROM %i', $table ), ARRAY_A );
 		self::notice();
 		echo '<section id="ilsm-search-console-import" class="ilsm-panel ilsm-settings-card"><div class="ilsm-settings-head"><span class="ilsm-settings-icon"><i class="fa fa-upload" aria-hidden="true"></i></span><div><h2>' . esc_html__( 'Search Console data source', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Optional local evidence for broken-link priority, SEO reports, and internal-link opportunity ordering. DMA never contacts Google and never treats imported data as live HTTP proof.', 'dma-internlink-mapper' ) . '</p></div></div>';
 		if ( ! current_user_can( 'ilsm_manage_settings' ) && ! current_user_can( 'manage_options' ) ) { echo '<p>' . esc_html__( 'An administrator can manage this optional dataset.', 'dma-internlink-mapper' ) . '</p></section>'; return; }
@@ -212,7 +245,7 @@ final class ILSM_Search_Console_Import {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Sanitized read-only redirect notice.
 		$key = isset( $_GET['ilsm_csv_notice'] ) ? sanitize_key( wp_unslash( $_GET['ilsm_csv_notice'] ) ) : '';
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Sanitized read-only count.
-		$count = isset( $_GET['ilsm_csv_count'] ) ? absint( $_GET['ilsm_csv_count'] ) : 0;
+		$count = isset( $_GET['ilsm_csv_count'] ) ? absint( wp_unslash( $_GET['ilsm_csv_count'] ) ) : 0;
 		$messages = array( 'upload_failed' => __( 'The export upload did not complete.', 'dma-internlink-mapper' ), 'invalid_file' => __( 'Choose a Search Console CSV up to 5 MB or ZIP up to 10 MB.', 'dma-internlink-mapper' ), 'invalid_columns' => __( 'A Pages report with Page, Clicks, and Impressions columns was not found.', 'dma-internlink-mapper' ), 'queries_report' => __( 'This is the Queries report. Upload Pages.csv or the complete Search Console ZIP export.', 'dma-internlink-mapper' ), 'missing_pages_report' => __( 'The ZIP does not contain Pages.csv. Export Performance results with the Pages tab included.', 'dma-internlink-mapper' ), 'zip_unavailable' => __( 'This server cannot read ZIP files. Extract and upload Pages.csv instead.', 'dma-internlink-mapper' ), 'invalid_zip' => __( 'The ZIP export is invalid or contains too many files.', 'dma-internlink-mapper' ), 'unsafe_zip' => __( 'The ZIP was rejected by the compressed-size safety limits.', 'dma-internlink-mapper' ), 'too_many_rows' => __( 'The Pages report exceeds the secure 10,000-row limit.', 'dma-internlink-mapper' ), 'no_same_site_rows' => __( 'No valid URLs for this WordPress site were found.', 'dma-internlink-mapper' ), 'database_failed' => __( 'The previous data source was preserved because the import could not be committed.', 'dma-internlink-mapper' ), 'deleted' => __( 'Imported Search Console data was deleted.', 'dma-internlink-mapper' ) );
 		if ( 'imported' === $key ) {
 			/* translators: %d: number of imported Search Console page rows. */

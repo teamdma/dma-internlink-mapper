@@ -62,53 +62,111 @@ final class ILSM_External_Link_Health {
         global $wpdb;
         $table = ILSM_Database::table( 'links' );
         $limit = max( 1, min( 1000, absint( $limit ) ) );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifier is allowlisted; mutable scan data must be fresh.
-        return $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,source_title,source_url,target_url,target_title,anchor_text,context_excerpt,link_location,link_type,follow_status,http_status,redirect_url,issue_type,created_at FROM {$table} WHERE scan_id=%d AND destination_type='external' ORDER BY id DESC LIMIT %d", absint( $scan_id ), $limit ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan data must be read fresh.
+        return $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,source_title,source_url,target_url,target_title,anchor_text,context_excerpt,link_location,link_type,follow_status,http_status,redirect_url,issue_type,created_at FROM %i WHERE scan_id=%d AND destination_type='external' ORDER BY id DESC LIMIT %d", $table, absint( $scan_id ), $limit ), ARRAY_A );
     }
 
     /** Count all external link occurrences for a completed scan. */
     public static function external_total( $scan_id, $ignored = false ) {
         global $wpdb;
-        $table = ILSM_Database::table( 'links' );
+        $table   = ILSM_Database::table( 'links' );
         $actions = ILSM_Database::table( 'external_actions' );
-        $operator = $ignored ? 'EXISTS' : 'NOT EXISTS';
-        $predicate = self::ignored_predicate( $actions );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifier is allowlisted; mutable scan data must be fresh.
-        return (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} l WHERE l.scan_id=%d AND l.destination_type='external' AND {$operator} ({$predicate})", absint( $scan_id ) ) );
+        $scan_id = absint( $scan_id );
+
+        if ( $ignored ) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable plugin-owned scan data must be read fresh.
+            return (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COUNT(*) FROM %i l WHERE l.scan_id=%d AND l.destination_type='external' AND EXISTS (
+                        SELECT 1 FROM %i a WHERE
+                        (a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key)
+                        OR
+                        (a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1)))
+                    )",
+                    $table,
+                    $scan_id,
+                    $actions
+                )
+            );
+        }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable plugin-owned scan data must be read fresh.
+        return (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) FROM %i l WHERE l.scan_id=%d AND l.destination_type='external' AND NOT EXISTS (
+                    SELECT 1 FROM %i a WHERE
+                    (a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key)
+                    OR
+                    (a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1)))
+                )",
+                $table,
+                $scan_id,
+                $actions
+            )
+        );
     }
 
     /** Query one bounded page of external link occurrences. */
     public static function external_rows_page( $scan_id, $page, $per_page, $ignored = false ) {
         global $wpdb;
-        $table = ILSM_Database::table( 'links' );
+        $table   = ILSM_Database::table( 'links' );
         $actions = ILSM_Database::table( 'external_actions' );
+        $scan_id = absint( $scan_id );
         $page = max( 1, absint( $page ) );
         $per_page = max( 20, min( 100, absint( $per_page ) ) );
         $offset = ( $page - 1 ) * $per_page;
-        $operator = $ignored ? 'EXISTS' : 'NOT EXISTS';
-        $occurrence_predicate = self::occurrence_ignored_predicate( $actions );
-        $domain_predicate = self::domain_ignored_predicate( $actions );
-        $predicate = "{$occurrence_predicate} OR {$domain_predicate}";
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifier is allowlisted; mutable scan data must be fresh.
-        return $wpdb->get_results( $wpdb->prepare( "SELECT l.id,l.occurrence_key,l.source_post_id,l.source_title,l.source_url,l.target_url,l.target_title,l.anchor_text,l.context_excerpt,l.link_location,l.link_type,l.follow_status,l.http_status,l.redirect_url,l.issue_type,l.created_at,EXISTS(SELECT 1 FROM {$actions} a WHERE {$occurrence_predicate}) AS ignored_occurrence,EXISTS(SELECT 1 FROM {$actions} a WHERE {$domain_predicate}) AS ignored_domain FROM {$table} l WHERE l.scan_id=%d AND l.destination_type='external' AND {$operator} (SELECT 1 FROM {$actions} a WHERE {$predicate}) ORDER BY l.id DESC LIMIT %d OFFSET %d", absint( $scan_id ), $per_page, $offset ), ARRAY_A );
-    }
 
-    /** Match persistent report-only ignores without modifying scan rows. */
-    private static function ignored_predicate( $actions ) {
-        ILSM_Database::checked_table( $actions );
-        return 'SELECT 1 FROM ' . $actions . ' a WHERE ' . self::occurrence_ignored_predicate( $actions ) . ' OR ' . self::domain_ignored_predicate( $actions );
-    }
+        if ( $ignored ) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded mutable plugin-owned report data must be read fresh.
+            return $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT l.id,l.occurrence_key,l.source_post_id,l.source_title,l.source_url,l.target_url,l.target_title,l.anchor_text,l.context_excerpt,l.link_location,l.link_type,l.follow_status,l.http_status,l.redirect_url,l.issue_type,l.created_at,
+                    EXISTS(SELECT 1 FROM %i a WHERE a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key) AS ignored_occurrence,
+                    EXISTS(SELECT 1 FROM %i a WHERE a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1))) AS ignored_domain
+                    FROM %i l
+                    WHERE l.scan_id=%d AND l.destination_type='external' AND EXISTS (
+                        SELECT 1 FROM %i a WHERE
+                        (a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key)
+                        OR
+                        (a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1)))
+                    )
+                    ORDER BY l.id DESC LIMIT %d OFFSET %d",
+                    $actions,
+                    $actions,
+                    $table,
+                    $scan_id,
+                    $actions,
+                    $per_page,
+                    $offset
+                ),
+                ARRAY_A
+            );
+        }
 
-    /** Correlated predicate for one exact scanned occurrence. */
-    private static function occurrence_ignored_predicate( $actions ) {
-        ILSM_Database::checked_table( $actions );
-        return "a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key";
-    }
-
-    /** Correlated predicate for all occurrences on one external hostname. */
-    private static function domain_ignored_predicate( $actions ) {
-        ILSM_Database::checked_table( $actions );
-        return "a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1))";
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Bounded mutable plugin-owned report data must be read fresh.
+        return $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT l.id,l.occurrence_key,l.source_post_id,l.source_title,l.source_url,l.target_url,l.target_title,l.anchor_text,l.context_excerpt,l.link_location,l.link_type,l.follow_status,l.http_status,l.redirect_url,l.issue_type,l.created_at,
+                EXISTS(SELECT 1 FROM %i a WHERE a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key) AS ignored_occurrence,
+                EXISTS(SELECT 1 FROM %i a WHERE a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1))) AS ignored_domain
+                FROM %i l
+                WHERE l.scan_id=%d AND l.destination_type='external' AND NOT EXISTS (
+                    SELECT 1 FROM %i a WHERE
+                    (a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key)
+                    OR
+                    (a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1)))
+                )
+                ORDER BY l.id DESC LIMIT %d OFFSET %d",
+                $actions,
+                $actions,
+                $table,
+                $scan_id,
+                $actions,
+                $per_page,
+                $offset
+            ),
+            ARRAY_A
+        );
     }
 
     /** Aggregate external destination hosts without loading every occurrence into PHP. */
@@ -116,9 +174,27 @@ final class ILSM_External_Link_Health {
         global $wpdb;
         $table = ILSM_Database::table( 'links' );
         $actions = ILSM_Database::table( 'external_actions' );
-        $predicate = self::ignored_predicate( $actions );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifier is allowlisted; read-only aggregation over current scan data.
-        $rows = $wpdb->get_results( $wpdb->prepare( "SELECT LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1)) AS host,COUNT(*) AS occurrences,SUM(CASE WHEN l.follow_status='nofollow' THEN 1 ELSE 0 END) AS nofollow_occurrences,SUM(CASE WHEN l.follow_status='follow' THEN 1 ELSE 0 END) AS follow_occurrences FROM {$table} l WHERE l.scan_id=%d AND l.destination_type='external' AND NOT EXISTS ({$predicate}) GROUP BY host ORDER BY occurrences DESC", absint( $scan_id ) ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable plugin-owned scan data must be read fresh.
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1)) AS host,
+                COUNT(*) AS occurrences,
+                SUM(CASE WHEN l.follow_status='nofollow' THEN 1 ELSE 0 END) AS nofollow_occurrences,
+                SUM(CASE WHEN l.follow_status='follow' THEN 1 ELSE 0 END) AS follow_occurrences
+                FROM %i l
+                WHERE l.scan_id=%d AND l.destination_type='external' AND NOT EXISTS (
+                    SELECT 1 FROM %i a WHERE
+                    (a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key)
+                    OR
+                    (a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1)))
+                )
+                GROUP BY host ORDER BY occurrences DESC",
+                $table,
+                absint( $scan_id ),
+                $actions
+            ),
+            ARRAY_A
+        );
         $domains = array();
         foreach ( (array) $rows as $row ) {
             $host = self::normalize_domain( $row['host'] ?? '' );
@@ -140,9 +216,25 @@ final class ILSM_External_Link_Health {
         global $wpdb;
         $table = ILSM_Database::table( 'links' );
         $actions = ILSM_Database::table( 'external_actions' );
-        $predicate = self::ignored_predicate( $actions );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifier is allowlisted; read-only aggregation over current scan data.
-        $row = $wpdb->get_row( $wpdb->prepare( "SELECT SUM(CASE WHEN l.http_status>=400 OR l.issue_type='broken' THEN 1 ELSE 0 END) AS broken_count, SUM(CASE WHEN l.redirect_url IS NOT NULL AND l.redirect_url<>'' THEN 1 ELSE 0 END) AS redirect_count FROM {$table} l WHERE l.scan_id=%d AND l.destination_type='external' AND NOT EXISTS ({$predicate})", absint( $scan_id ) ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable plugin-owned scan data must be read fresh.
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT
+                SUM(CASE WHEN l.http_status>=400 OR l.issue_type='broken' THEN 1 ELSE 0 END) AS broken_count,
+                SUM(CASE WHEN l.redirect_url IS NOT NULL AND l.redirect_url<>'' THEN 1 ELSE 0 END) AS redirect_count
+                FROM %i l
+                WHERE l.scan_id=%d AND l.destination_type='external' AND NOT EXISTS (
+                    SELECT 1 FROM %i a WHERE
+                    (a.action_type='ignore_occurrence' AND a.source_type='post' AND a.source_id=l.source_post_id AND a.target_url_hash=l.target_url_hash AND a.replacement_text=l.occurrence_key)
+                    OR
+                    (a.action_type='ignore_domain' AND a.source_type='domain' AND a.replacement_text=LOWER(SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING_INDEX(l.target_url,'/',3),'/',-1),':',1)))
+                )",
+                $table,
+                absint( $scan_id ),
+                $actions
+            ),
+            ARRAY_A
+        );
         return array( 'broken' => absint( $row['broken_count'] ?? 0 ), 'redirects' => absint( $row['redirect_count'] ?? 0 ) );
     }
 
@@ -151,8 +243,8 @@ final class ILSM_External_Link_Health {
         global $wpdb;
         $table = ILSM_Database::table( 'links' );
         $limit = max( 1, min( 500, absint( $limit ) ) );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifier is allowlisted; mutable scan data must be fresh.
-        $rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,source_title,source_url,target_url,anchor_text,link_location,http_status,redirect_url,issue_type,created_at FROM {$table} WHERE scan_id=%d AND destination_type='unresolved' AND target_post_id=0 ORDER BY id DESC LIMIT %d", absint( $scan_id ), $limit ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan data must be read fresh.
+        $rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,source_title,source_url,target_url,anchor_text,link_location,http_status,redirect_url,issue_type,created_at FROM %i WHERE scan_id=%d AND destination_type='unresolved' AND target_post_id=0 ORDER BY id DESC LIMIT %d", $table, absint( $scan_id ), $limit ), ARRAY_A );
         $out = array();
         foreach ( (array) $rows as $row ) {
             if ( ILSM_Link_Normalizer::is_internal( $row['target_url'] ) ) { $out[] = $row; }
@@ -165,7 +257,7 @@ final class ILSM_External_Link_Health {
         global $wpdb;
         $limit = max( 1, min( 500, absint( $limit ) ) );
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only comment health report; mutable comment data must be fresh.
-        $comments = $wpdb->get_results( $wpdb->prepare( "SELECT comment_ID,comment_post_ID,comment_author,comment_author_url,comment_content,comment_date_gmt FROM {$wpdb->comments} WHERE comment_approved='1' AND (comment_author_url<>'' OR comment_content LIKE %s OR comment_content LIKE %s) ORDER BY comment_ID DESC LIMIT %d", '%http://%', '%https://%', $limit ), ARRAY_A );
+        $comments = $wpdb->get_results( $wpdb->prepare( "SELECT comment_ID,comment_post_ID,comment_author,comment_author_url,comment_content,comment_date_gmt FROM %i WHERE comment_approved='1' AND (comment_author_url<>'' OR comment_content LIKE %s OR comment_content LIKE %s) ORDER BY comment_ID DESC LIMIT %d", $wpdb->comments, '%http://%', '%https://%', $limit ), ARRAY_A );
         $rows = array();
         foreach ( (array) $comments as $comment ) {
             $author_url = esc_url_raw( $comment['comment_author_url'] );
@@ -280,11 +372,11 @@ final class ILSM_External_Link_Health {
         global $wpdb;
         $scans = ILSM_Database::table( 'scans' );
         $links = ILSM_Database::table( 'links' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifiers are allowlisted; mutable scan data must be fresh.
-        $previous = (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$scans} WHERE status='completed' AND id<%d ORDER BY id DESC LIMIT 1", absint( $scan_id ) ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan history must be read fresh.
+        $previous = (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM %i WHERE status='completed' AND id<%d ORDER BY id DESC LIMIT 1", $scans, absint( $scan_id ) ) );
         if ( ! $previous ) { return array(); }
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifiers are allowlisted; mutable scan data must be fresh.
-        $urls = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT target_url FROM {$links} WHERE scan_id=%d AND destination_type='external'", $previous ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan links must be read fresh.
+        $urls = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT target_url FROM %i WHERE scan_id=%d AND destination_type='external'", $links, $previous ) );
         $domains = array();
         foreach ( (array) $urls as $url ) {
             $host = self::normalize_domain( wp_parse_url( $url, PHP_URL_HOST ) );
@@ -521,7 +613,7 @@ final class ILSM_External_Link_Health {
         echo '<div class="ilsm-table-scroll"><table class="widefat striped ilsm-external-table"><thead><tr><th>' . esc_html__( 'Source', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Unexpected URL', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Location', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'HTTP', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';
         if ( empty( $unexpected ) ) { echo '<tr><td colspan="4">' . esc_html__( 'No unresolved internal URLs were found in the latest scan.', 'dma-internlink-mapper' ) . '</td></tr>'; }
         foreach ( $unexpected as $row ) {
-            echo '<tr><td><strong>' . esc_html( $row['source_title'] ) . '</strong><small>' . esc_html( $row['source_url'] ) . '</small></td><td><code>' . esc_html( $row['target_url'] ) . '</code><div class="ilsm-link-flags"><span class="is-review">' . esc_html__( 'Unexpected URL', 'dma-internlink-mapper' ) . '</span></div></td><td>' . esc_html( $row['link_location'] ) . '</td><td>' . ( $row['http_status'] ? absint( $row['http_status'] ) : '—' ) . '</td></tr>';
+            echo '<tr><td><strong>' . esc_html( $row['source_title'] ) . '</strong><small>' . esc_html( $row['source_url'] ) . '</small></td><td><code>' . esc_html( $row['target_url'] ) . '</code><div class="ilsm-link-flags"><span class="is-review">' . esc_html__( 'Unexpected URL', 'dma-internlink-mapper' ) . '</span></div></td><td>' . esc_html( $row['link_location'] ) . '</td><td>' . esc_html( $row['http_status'] ? (string) absint( $row['http_status'] ) : '—' ) . '</td></tr>';
         }
         echo '</tbody></table></div></div></section>';
     }
@@ -586,57 +678,31 @@ final class ILSM_External_Link_Health {
         wp_send_json_success( array( 'message' => $message, 'added' => count( $added ) ) );
     }
 
-    /** Build a short, non-autoloaded lock key for one scan/domain mutation. */
-    private static function domain_operation_lock_key( $scan_id, $domain ) {
-        return 'ilsm_domain_op_' . substr( hash( 'sha256', absint( $scan_id ) . '|' . self::normalize_domain( $domain ) ), 0, 32 );
+    /** Build a short plugin-table lock name for one scan/domain mutation. */
+    private static function domain_operation_lock_name( $scan_id, $domain ) {
+        return 'domain_op_' . substr( hash( 'sha256', absint( $scan_id ) . '|' . self::normalize_domain( $domain ) ), 0, 32 );
     }
 
-    /** Acquire an atomic option-backed lock so two domain mutations cannot overlap. */
-    private static function acquire_domain_operation_lock( $scan_id, $domain, $mode ) {
-        $key      = self::domain_operation_lock_key( $scan_id, $domain );
-        $existing = get_option( $key, array() );
-        $now      = time();
-        if ( is_array( $existing ) && ! empty( $existing['expires'] ) && absint( $existing['expires'] ) <= $now ) {
-            delete_option( $key );
-            $existing = array();
-        }
-        if ( ! empty( $existing ) ) {
+    /** Acquire a database-backed lock so two domain mutations cannot overlap. */
+    private static function acquire_domain_operation_lock( $scan_id, $domain ) {
+        $lock = ILSM_Locks::acquire( self::domain_operation_lock_name( $scan_id, $domain ), 300 );
+        if ( is_wp_error( $lock ) ) {
             return new WP_Error( 'ilsm_domain_operation_busy', __( 'Another operation is already changing this domain. Wait for it to finish or stop it safely before starting another action.', 'dma-internlink-mapper' ) );
         }
-        $token = wp_generate_password( 32, false, false );
-        $lock  = array(
-            'token'   => $token,
-            'user_id' => get_current_user_id(),
-            'mode'    => sanitize_key( $mode ),
-            'expires' => $now + 300,
-        );
-        if ( ! add_option( $key, $lock, '', false ) ) {
-            return new WP_Error( 'ilsm_domain_operation_busy', __( 'Another operation started changing this domain at the same time. Please try again after it finishes.', 'dma-internlink-mapper' ) );
-        }
-        return $token;
+        return $lock;
     }
 
     /** Validate and refresh an existing domain-operation lock. */
-    private static function refresh_domain_operation_lock( $scan_id, $domain, $mode, $token ) {
-        $key  = self::domain_operation_lock_key( $scan_id, $domain );
-        $lock = get_option( $key, array() );
-        if ( ! is_array( $lock ) || empty( $lock['token'] ) || empty( $token ) || ! hash_equals( (string) $lock['token'], (string) $token ) || absint( $lock['user_id'] ?? 0 ) !== get_current_user_id() || sanitize_key( $lock['mode'] ?? '' ) !== sanitize_key( $mode ) ) {
+    private static function refresh_domain_operation_lock( $scan_id, $domain, $token ) {
+        if ( empty( $token ) || ! ILSM_Locks::refresh( self::domain_operation_lock_name( $scan_id, $domain ), $token, 300 ) ) {
             return new WP_Error( 'ilsm_domain_operation_lock_invalid', __( 'This domain operation is no longer active. Start it again so the remaining links can be revalidated safely.', 'dma-internlink-mapper' ) );
         }
-        $lock['expires'] = time() + 300;
-        update_option( $key, $lock, false );
         return true;
     }
 
-    /** Release a domain-operation lock owned by the current user/token. */
+    /** Release a domain-operation lock only when its ownership token matches. */
     private static function release_domain_operation_lock( $scan_id, $domain, $token ) {
-        $key  = self::domain_operation_lock_key( $scan_id, $domain );
-        $lock = get_option( $key, array() );
-        if ( is_array( $lock ) && ! empty( $lock['token'] ) && ! empty( $token ) && hash_equals( (string) $lock['token'], (string) $token ) && absint( $lock['user_id'] ?? 0 ) === get_current_user_id() ) {
-            delete_option( $key );
-            return true;
-        }
-        return false;
+        return ! empty( $token ) && ILSM_Locks::release( self::domain_operation_lock_name( $scan_id, $domain ), $token );
     }
 
     /** Stop an in-progress client batch sequence after its current request finishes. */
@@ -771,12 +837,12 @@ final class ILSM_External_Link_Health {
         }
 
         if ( 0 === $cursor && '' === $operation_token ) {
-            $operation_token = self::acquire_domain_operation_lock( $scan_id, $domain, $mode );
+            $operation_token = self::acquire_domain_operation_lock( $scan_id, $domain );
             if ( is_wp_error( $operation_token ) ) {
                 wp_send_json_error( array( 'message' => $operation_token->get_error_message() ), 409 );
             }
         } else {
-            $lock_ok = self::refresh_domain_operation_lock( $scan_id, $domain, $mode, $operation_token );
+            $lock_ok = self::refresh_domain_operation_lock( $scan_id, $domain, $operation_token );
             if ( is_wp_error( $lock_ok ) ) {
                 wp_send_json_error( array( 'message' => $lock_ok->get_error_message() ), 409 );
             }
@@ -991,7 +1057,7 @@ final class ILSM_External_Link_Health {
 
             // Already in the requested state is a successful no-op, not a failure.
             if ( ! $changed ) {
-                $reported_status = sanitize_key( (string) $wpdb->get_var( $wpdb->prepare( "SELECT follow_status FROM {$links_table} WHERE scan_id=%d AND source_post_id=%d AND target_url_hash=%s AND destination_type='external' LIMIT 1", absint( $scan_id ), $post_id, $url_hash ) ) ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Exact current-scan state check.
+                $reported_status = sanitize_key( (string) $wpdb->get_var( $wpdb->prepare( "SELECT follow_status FROM %i WHERE scan_id=%d AND source_post_id=%d AND target_url_hash=%s AND destination_type='external' LIMIT 1", $links_table, absint( $scan_id ), $post_id, $url_hash ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Exact current-scan state check.
                 if ( $reported_status === $mode ) { return array( 'changed' => false, 'already' => true ); }
                 return new WP_Error( 'ilsm_domain_occurrence_uneditable', __( 'One rendered link could not be mapped to an editable stored occurrence.', 'dma-internlink-mapper' ) );
             }
@@ -1046,8 +1112,8 @@ final class ILSM_External_Link_Health {
         $scan_id = ILSM_Database::latest_completed_scan_id();
         $links = ILSM_Database::table( 'links' );
         $actions = ILSM_Database::table( 'external_actions' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Strictly allowlisted plugin table; exact current-scan row is required before changing report preferences.
-        $row = $wpdb->get_row( $wpdb->prepare( "SELECT id,occurrence_key,source_post_id,target_url,target_url_hash FROM {$links} WHERE id=%d AND scan_id=%d AND destination_type='external' LIMIT 1", $link_id, $scan_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Exact current-scan row is required before changing report preferences.
+        $row = $wpdb->get_row( $wpdb->prepare( "SELECT id,occurrence_key,source_post_id,target_url,target_url_hash FROM %i WHERE id=%d AND scan_id=%d AND destination_type='external' LIMIT 1", $links, $link_id, $scan_id ), ARRAY_A );
         if ( ! $row || ! current_user_can( 'read_post', absint( $row['source_post_id'] ) ) ) {
             wp_send_json_error( array( 'message' => __( 'The selected external-link occurrence is no longer available in the latest scan.', 'dma-internlink-mapper' ) ), 409 );
         }
@@ -1143,8 +1209,8 @@ final class ILSM_External_Link_Health {
         $scan_id = ILSM_Database::latest_completed_scan_id();
         $links_table = ILSM_Database::table( 'links' );
         $url_hash = hash( 'sha256', $url );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin table identifier is allowlisted; this verifies current report evidence before mutation.
-        $evidence = $scan_id ? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$links_table} WHERE scan_id=%d AND source_post_id=%d AND target_url_hash=%s AND destination_type='external'", $scan_id, $post_id, $url_hash ) ) : 0;
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Verify exact current report evidence before mutation.
+        $evidence = $scan_id ? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND source_post_id=%d AND target_url_hash=%s AND destination_type='external'", $links_table, $scan_id, $post_id, $url_hash ) ) : 0;
         if ( ! $evidence ) { wp_send_json_error( array( 'message' => __( 'This URL is not present in the latest completed External Link Health scan, so it was not modified.', 'dma-internlink-mapper' ) ), 409 ); }
 
         $content = (string) $post->post_content;

@@ -29,14 +29,15 @@ final class ILSM_Elementor {
         add_action( 'wp_ajax_ilsm_elementor_insert_link', array( $this, 'ajax_insert_link' ) );
         add_action( 'wp_ajax_ilsm_elementor_preview_link', array( $this, 'ajax_preview_link' ) );
         add_action( 'wp_ajax_ilsm_elementor_verify_published_link', array( $this, 'ajax_verify_published_link' ) );
+        add_action( 'wp_ajax_ilsm_elementor_finalize_insertion', array( $this, 'ajax_finalize_insertion' ) );
+        add_action( 'wp_ajax_ilsm_elementor_undo_insertion', array( $this, 'ajax_undo_insertion' ) );
     }
 
     public function enqueue_editor_styles() {
         if ( ! current_user_can( 'edit_posts' ) ) { return; }
-        $font_css = ILSM_PATH . 'admin/vendor/font-awesome/css/font-awesome.min.css';
         $panel_css = ILSM_PATH . 'admin/css/elementor-assistant.css';
-        wp_enqueue_style( 'ilsm-font-awesome', ILSM_URL . 'admin/vendor/font-awesome/css/font-awesome.min.css', array(), is_readable( $font_css ) ? (string) filemtime( $font_css ) : ILSM_VERSION );
-        wp_enqueue_style( 'ilsm-elementor', ILSM_URL . 'admin/css/elementor-assistant.css', array(), is_readable( $panel_css ) ? (string) filemtime( $panel_css ) : ILSM_VERSION );
+        ILSM_Admin_Assets::enqueue_icons();
+        wp_enqueue_style( 'ilsm-elementor', ILSM_URL . 'admin/css/elementor-assistant.css', array( 'ilsm-icons' ), is_readable( $panel_css ) ? (string) filemtime( $panel_css ) : ILSM_VERSION );
     }
 
     public function enqueue_editor_assets() {
@@ -49,7 +50,7 @@ final class ILSM_Elementor {
             'nonce'   => wp_create_nonce( 'ilsm_editor_ajax' ),
             'canInsert' => current_user_can( 'ilsm_insert_links' ),
             'minConfidence' => max( 60, min( 100, absint( $ilsm_settings['insert_min_confidence'] ) ) ),
-            'sourceUrl' => ( isset( $_GET['post'] ) && absint( $_GET['post'] ) ) ? esc_url_raw( get_permalink( absint( $_GET['post'] ) ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only editor context used only to build a frontend link.
+            'sourceUrl' => ( isset( $_GET['post'] ) && absint( wp_unslash( $_GET['post'] ) ) ) ? esc_url_raw( get_permalink( absint( wp_unslash( $_GET['post'] ) ) ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only editor context used only to build a frontend link.
             'strings' => array(
                 'title'          => __( 'DMA InternLink Mapper', 'dma-internlink-mapper' ),
                 'subtitle'       => __( 'Local Elementor link analysis', 'dma-internlink-mapper' ),
@@ -115,6 +116,7 @@ final class ILSM_Elementor {
                 'undoVerifyFailed' => __( 'Undo failed verification.', 'dma-internlink-mapper' ),
                 'undoSaveFailed' => __( 'Undo failed: Elementor could not save the restored text.', 'dma-internlink-mapper' ),
                 'undoUpdateRejected' => __( 'Undo failed: Elementor rejected the text-control update.', 'dma-internlink-mapper' ),
+                'rollbackFailed' => __( 'The insertion could not be finalized and Elementor could not restore the original value automatically. Review the page before continuing.', 'dma-internlink-mapper' ),
             ),
         ) );
     }
@@ -158,50 +160,140 @@ final class ILSM_Elementor {
         }
 
         $target_url = esc_url_raw( get_permalink( $target_id ) );
-        $source_url = esc_url_raw( get_permalink( $source_id ) );
         $raw        = (string) get_post_meta( $source_id, '_elementor_data', true );
-        $persisted  = false;
-        if ( $target_url && '' !== $raw ) {
-            $needle_url = str_replace( array( '\\/', '&amp;' ), array( '/', '&' ), $target_url );
-            $haystack   = str_replace( array( '\\/', '&amp;' ), array( '/', '&' ), $raw );
-            $persisted  = false !== strpos( $haystack, $needle_url );
+        $persisted  = $target_url && '' !== $raw && self::html_has_exact_marker_link( $raw, $target_url, $anchor );
+        $live_state = self::live_marker_state( $source_id, $target_url, $anchor, $persisted );
+
+        wp_send_json_success(
+            array_merge(
+                array( 'persisted' => (bool) $persisted, 'target_url' => $target_url ),
+                $live_state
+            )
+        );
+    }
+
+    /** Finalize editor-side Elementor insertion after exact persisted verification. */
+    public function ajax_finalize_insertion() {
+        if ( ! current_user_can( 'ilsm_insert_links' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'dma-internlink-mapper' ) ), 403 );
+        }
+        check_ajax_referer( 'ilsm_editor_ajax', 'nonce' );
+
+        $token = isset( $_POST['finalize_token'] ) ? sanitize_text_field( wp_unslash( $_POST['finalize_token'] ) ) : '';
+        $result = ( new ILSM_Link_Inserter() )->finalize_elementor_editor_insertion( $token );
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error(
+                array(
+                    'message'                  => $result->get_error_message(),
+                    'code'                     => $result->get_error_code(),
+                    'requires_editor_rollback' => true,
+                ),
+                409
+            );
         }
 
-        $post = get_post( $source_id );
+        $live_state = self::live_marker_state(
+            absint( $result['source_id'] ?? 0 ),
+            esc_url_raw( $result['target_url'] ?? '' ),
+            sanitize_text_field( (string) ( $result['anchor'] ?? '' ) ),
+            true
+        );
+        wp_send_json_success( array_merge( $result, $live_state ) );
+    }
+
+    /** Undo a durable Elementor insertion using the same server-side history as other editors. */
+    public function ajax_undo_insertion() {
+        if ( ! current_user_can( 'ilsm_insert_links' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'dma-internlink-mapper' ) ), 403 );
+        }
+        check_ajax_referer( 'ilsm_editor_ajax', 'nonce' );
+
+        $history_id = absint( wp_unslash( $_POST['history_id'] ?? 0 ) );
+        if ( ! $history_id ) {
+            wp_send_json_error( array( 'message' => __( 'The insertion history ID is missing.', 'dma-internlink-mapper' ) ), 400 );
+        }
+        $result = ( new ILSM_Link_Inserter() )->undo( $history_id );
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( array( 'message' => $result->get_error_message(), 'code' => $result->get_error_code() ), 409 );
+        }
+        wp_send_json_success( $result );
+    }
+
+    /** Check the public page for the exact plugin marker link, never a bare URL substring. */
+    private static function live_marker_state( $source_id, $target_url, $anchor, $persisted ) {
+        $post = get_post( absint( $source_id ) );
+        $source_url = $post instanceof WP_Post ? esc_url_raw( get_permalink( $post ) ) : '';
         $published = $post instanceof WP_Post && 'publish' === $post->post_status && is_post_publicly_viewable( $post );
         $live = false;
         $http_code = 0;
+
         if ( $persisted && $published && $source_url && $target_url ) {
             $verify_url = add_query_arg( 'ilsm_verify', (string) time(), $source_url );
-            $response = wp_safe_remote_get( $verify_url, array(
-                'timeout'             => 8,
-                'redirection'         => 3,
-                'reject_unsafe_urls'  => true,
-                'sslverify'           => true,
-                'limit_response_size' => 3145728,
-                'headers'             => array( 'Cache-Control' => 'no-cache' ),
-                'user-agent'          => 'WordPress/DMA-InternLink-Mapper live-link verification',
-            ) );
+            $response = wp_safe_remote_get(
+                $verify_url,
+                array(
+                    'timeout'             => 8,
+                    'redirection'         => 3,
+                    'reject_unsafe_urls'  => true,
+                    'sslverify'           => true,
+                    'limit_response_size' => 3145728,
+                    'headers'             => array( 'Cache-Control' => 'no-cache' ),
+                    'user-agent'          => 'WordPress/DMA-InternLink-Mapper live-link verification',
+                )
+            );
             if ( ! is_wp_error( $response ) ) {
                 $http_code = (int) wp_remote_retrieve_response_code( $response );
                 $body = (string) wp_remote_retrieve_body( $response );
                 if ( $http_code >= 200 && $http_code < 400 && '' !== $body ) {
-                    $normalized_body = html_entity_decode( $body, ENT_QUOTES, get_bloginfo( 'charset' ) ?: 'UTF-8' );
-                    $normalized_url  = html_entity_decode( $target_url, ENT_QUOTES, get_bloginfo( 'charset' ) ?: 'UTF-8' );
-                    $live = false !== strpos( $normalized_body, $normalized_url );
+                    $live = self::html_has_exact_marker_link( $body, $target_url, $anchor );
                 }
             }
         }
 
-        wp_send_json_success( array(
-            'persisted'   => (bool) $persisted,
+        return array(
             'published'   => (bool) $published,
             'live'        => (bool) $live,
             'http_code'   => $http_code,
             'source_url'  => $source_url,
-            'target_url'  => $target_url,
             'post_status' => $post instanceof WP_Post ? (string) $post->post_status : '',
-        ) );
+        );
+    }
+
+    /** Match one exact DMA marker link with the expected destination and visible anchor. */
+    private static function html_has_exact_marker_link( $html, $url, $anchor ) {
+        $html   = (string) $html;
+        $target = ILSM_Link_Normalizer::normalize( (string) $url, home_url( '/' ) );
+        $anchor = self::normalize_marker_text( $anchor );
+        if ( '' === $html || ! $target || '' === $anchor ) {
+            return false;
+        }
+
+        $pattern = '/<a\b(?=[^>]*\bdata-ilsm-insertion\s*=\s*(["\'])1\1)[^>]*\bhref\s*=\s*(["\'])(.*?)\2[^>]*>(.*?)<\/a>/isu';
+        if ( ! preg_match_all( $pattern, $html, $matches, PREG_SET_ORDER ) ) {
+            return false;
+        }
+        foreach ( $matches as $match ) {
+            $href = html_entity_decode( (string) ( $match[3] ?? '' ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+            $normalized = ILSM_Link_Normalizer::normalize( $href, home_url( '/' ) );
+            $inner = (string) ( $match[4] ?? '' );
+            if ( ! $normalized || untrailingslashit( $normalized ) !== untrailingslashit( $target ) ) {
+                continue;
+            }
+            if ( preg_match( '/<[^>]+>/', $inner ) ) {
+                continue;
+            }
+            if ( self::normalize_marker_text( $inner ) === $anchor ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Normalize plugin marker text without losing punctuation or case. */
+    private static function normalize_marker_text( $text ) {
+        $text = html_entity_decode( (string) $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        $text = preg_replace( '/\s+/u', ' ', $text );
+        return trim( is_string( $text ) ? $text : '' );
     }
 
     /** Insert a verified local suggestion into supported saved Elementor content. */

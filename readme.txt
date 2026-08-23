@@ -4,7 +4,7 @@ Tags: internal links, seo, link audit, orphan pages, link suggestions
 Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.1
+Stable tag: 1.0.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -24,7 +24,7 @@ When you decide to add or repair a link, the plugin uses previews, permission ch
 
 * Internal incoming and outgoing link reports.
 * Orphan-page and weak-anchor detection.
-* Internal-link opportunities based on your existing content.
+* Internal-link opportunities based on contextual relevance, internal graph evidence, destination need, imported Search Console page data, keyword ownership, and anchor diversity.
 * Safe link previews, insertion history, and undo support.
 * Broken-link review and repair tools.
 * 301 and 302 redirect management with loop protection.
@@ -32,7 +32,7 @@ When you decide to add or repair a link, the plugin uses previews, permission ch
 * Interactive Visual Map, Page Architecture, Site Architecture, and Knowledge Graph.
 * Gutenberg and Classic Editor support.
 * Safe Elementor text-content support.
-* CSV and local PDF reports.
+* Streamed CSV export and bounded local PDF reports.
 * Optional Google Search Console CSV/ZIP import.
 * Optional internal and external HTTP status checks.
 * Light and Dark admin appearance.
@@ -81,15 +81,15 @@ Yes. Supported saved Elementor text and WYSIWYG controls can be analyzed.
 
 Automatic insertion is limited to supported body-text controls. Headings, buttons, URLs, code fields, Dynamic Tags, headers, heroes, CTAs, and footers are not automatically modified.
 
-= Does it work with Yoast SEO or Rank Math? =
+= Does it work with Yoast SEO, Rank Math, or AIOSEO? =
 
-Yes. When available, supported focus-keyphrase metadata can be used as an additional relevance signal. DMA InternLink Mapper also works without either SEO plugin.
+Yes. When available, supported focus-keyphrase metadata from Yoast SEO, Rank Math, and AIOSEO can be used as an additional relevance and keyword-ownership signal. DMA InternLink Mapper also works without an SEO plugin.
 
 = Can it handle large websites? =
 
 Scans are processed in batches to reduce server load.
 
-Visualizations also use practical display limits to keep large graphs responsive. Large rendered scans can still require significant server resources, so conservative batch sizes are recommended.
+Visualizations also use practical display limits to keep large graphs responsive. Site-wide PDF appendices are capped at 500 rows per dataset so a presentation export cannot exhaust PHP memory; the CSV export streams the complete internal-link occurrence dataset. Large rendered scans can still require significant server resources, so conservative batch sizes are recommended.
 
 = Can I delete the plugin's stored data? =
 
@@ -113,13 +113,12 @@ https://wordpress.org/plugins/dma-internlink-mapper/
 
 == Changelog ==
 
-= 1.0.1 =
-
-* Hardened internal URL classification for HTTP(S) links and explicit non-standard ports.
-* Added regression tests and repository security/compatibility checks for development.
-* Added GitHub CI, dependency update configuration, and consistent editor settings.
-* Corrected release metadata and development hygiene without changing scan or insertion behavior.
-
 = 1.0.0 =
 
-* Initial release.
+* Initial WordPress.org release.
+* Adds contextual internal-link opportunity discovery with deterministic strategic ranking.
+* Uses internal graph strength, destination link need, imported Search Console page evidence, supported SEO-plugin focus keyphrases, keyword ownership, and anchor diversity as bounded ranking signals.
+* Keeps contextual relevance as the hard gate so strategic signals cannot promote unrelated links.
+* Adds keyword-cannibalization guards and natural long-tail anchor discovery up to five meaningful words.
+* Includes safe previews, permission and nonce checks, insertion validation, optional revisions, history, and undo support.
+* No AI, embeddings, telemetry, advertising, or remote content analysis are used.

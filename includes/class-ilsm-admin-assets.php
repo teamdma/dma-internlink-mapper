@@ -15,10 +15,18 @@ final class ILSM_Admin_Assets {
         add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue' ) );
     }
 
+    /** Load the WordPress-core icon font plus the plugin's tiny class compatibility layer. */
+    public static function enqueue_icons() {
+        $icons_css     = ILSM_PATH . 'admin/css/ilsm-icons.css';
+        $icons_version = is_readable( $icons_css ) ? substr( hash_file( 'sha256', $icons_css ), 0, 12 ) : ILSM_VERSION;
+        wp_enqueue_style( 'dashicons' );
+        wp_enqueue_style( 'ilsm-icons', ILSM_URL . 'admin/css/ilsm-icons.css', array( 'dashicons' ), $icons_version );
+    }
+
     public static function enqueue( $hook ) {
         if ( false === strpos( $hook, 'ilsm-' ) ) { return; }
 
-        wp_enqueue_style( 'ilsm-font-awesome', ILSM_URL . 'admin/vendor/font-awesome/css/font-awesome.min.css', array(), '4.7.0' );
+        self::enqueue_icons();
         $admin_css = ILSM_PATH . 'admin/css/admin.css';
         $admin_js = ILSM_PATH . 'admin/js/admin.js';
         $map_js = ILSM_PATH . 'admin/js/map-interactions.js';
@@ -28,7 +36,7 @@ final class ILSM_Admin_Assets {
         // workflows where stale JavaScript and current PHP cannot interoperate.
         $admin_css_version = is_readable( $admin_css ) ? substr( hash_file( 'sha256', $admin_css ), 0, 12 ) : ILSM_VERSION;
         $admin_js_version  = is_readable( $admin_js ) ? substr( hash_file( 'sha256', $admin_js ), 0, 12 ) : ILSM_VERSION;
-        wp_enqueue_style( 'ilsm-admin', ILSM_URL . 'admin/css/admin.css', array( 'ilsm-font-awesome' ), $admin_css_version );
+        wp_enqueue_style( 'ilsm-admin', ILSM_URL . 'admin/css/admin.css', array( 'ilsm-icons' ), $admin_css_version );
         $onpage_css = ILSM_PATH . 'admin/css/onpage-audit.css';
         if ( false !== strpos( $hook, 'ilsm-on-page-seo' ) && is_readable( $onpage_css ) ) {
             wp_enqueue_style( 'ilsm-onpage-audit', ILSM_URL . 'admin/css/onpage-audit.css', array( 'ilsm-admin' ), (string) filemtime( $onpage_css ) );
@@ -40,8 +48,8 @@ final class ILSM_Admin_Assets {
 
         $settings = get_option( 'ilsm_settings', array() );
         global $wpdb;
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-        $current_scan = $wpdb->get_row( "SELECT id,user_id,status,scanned_items,total_items,lock_expires,heartbeat_at,started_at FROM " . ILSM_Database::table( 'scans' ) . " WHERE status IN ('running','paused','interrupted') ORDER BY id DESC LIMIT 1", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be read fresh for the admin runtime.
+        $current_scan = $wpdb->get_row( $wpdb->prepare( "SELECT id,user_id,status,scanned_items,total_items,lock_expires,heartbeat_at,started_at FROM %i WHERE status IN ('running','paused','interrupted') ORDER BY id DESC LIMIT 1", ILSM_Database::table( 'scans' ) ), ARRAY_A );
         wp_localize_script( 'ilsm-admin', 'ILSM', array(
             'ajax'      => admin_url( 'admin-ajax.php' ),
             'nonce'     => wp_create_nonce( 'ilsm_admin' ),
@@ -57,6 +65,10 @@ final class ILSM_Admin_Assets {
             'canForceUnlock' => current_user_can( 'ilsm_manage_settings' ),
             'canManageSettings' => current_user_can( 'ilsm_manage_settings' ),
             'settingsUrl'  => admin_url( 'admin.php?page=ilsm-settings#ilsm-safe-link-insertion' ),
+            'insertBatchSize' => max( 1, min( 20, absint( $settings['insert_batch_size'] ?? 5 ) ) ),
+            'insertMaxPerRun' => max( 1, min( 100, absint( $settings['insert_max_per_run'] ?? 20 ) ) ),
+            'insertMaxPerSource' => max( 1, min( 10, absint( $settings['insert_max_per_source'] ?? 2 ) ) ),
+            'insertBulkEnabled' => ! empty( $settings['insert_auto_enabled'] ),
             'dashboardUrl' => admin_url( 'admin.php?page=ilsm-dashboard' ),
             'mapColors' => array(
                 'incoming' => sanitize_hex_color( $settings['incoming_color'] ?? '#2563EB' ) ?: '#2563EB',
@@ -191,6 +203,7 @@ final class ILSM_Admin_Assets {
                 'openInsertionSettings' => __( 'Open insertion settings', 'dma-internlink-mapper' ),
                 'safetyPreviewFailed' => __( 'Safety preview failed.', 'dma-internlink-mapper' ),
                 'safetyPreviewTimeout' => __( 'Safety preview timed out after 60 seconds.', 'dma-internlink-mapper' ),
+                'safetyPreviewIncomplete' => __( 'The server did not return a safety result for this selected opportunity. Nothing was changed.', 'dma-internlink-mapper' ),
                 'preparingPreview' => __( 'Preparing insertion preview…', 'dma-internlink-mapper' ),
                 'previewFailedChanged' => __( 'Preview failed. Regenerate opportunities if the source content has changed.', 'dma-internlink-mapper' ),
                 'noLongerPassesChecks' => __( 'This opportunity no longer passes the current insertion checks.', 'dma-internlink-mapper' ),

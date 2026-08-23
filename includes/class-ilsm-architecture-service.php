@@ -26,8 +26,8 @@ final class ILSM_Architecture_Service {
 
         $mode = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : 'page';
         if ( ! in_array( $mode, array( 'page', 'site', 'knowledge' ), true ) ) { $mode = 'page'; }
-        $root_id = isset( $_POST['root_id'] ) ? absint( $_POST['root_id'] ) : 0;
-        $max_depth = isset( $_POST['max_depth'] ) ? absint( $_POST['max_depth'] ) : 0;
+        $root_id = isset( $_POST['root_id'] ) ? absint( wp_unslash( $_POST['root_id'] ) ) : 0;
+        $max_depth = isset( $_POST['max_depth'] ) ? absint( wp_unslash( $_POST['max_depth'] ) ) : 0;
         $max_depth = min( 20, $max_depth );
         if ( in_array( $mode, array( 'site', 'knowledge' ), true ) ) {
             // Site-wide views are rooted at the real homepage and include every level.
@@ -38,8 +38,8 @@ final class ILSM_Architecture_Service {
         $requested = isset( $_POST['post_types'] ) ? (array) wp_unslash( $_POST['post_types'] ) : array();
         $post_types = $this->allowed_post_types( $requested );
         $status = isset( $_POST['status'] ) ? sanitize_key( wp_unslash( $_POST['status'] ) ) : 'all';
-        $min_in = isset( $_POST['min_in'] ) ? absint( $_POST['min_in'] ) : 0;
-        $min_out = isset( $_POST['min_out'] ) ? absint( $_POST['min_out'] ) : 0;
+        $min_in = isset( $_POST['min_in'] ) ? absint( wp_unslash( $_POST['min_in'] ) ) : 0;
+        $min_out = isset( $_POST['min_out'] ) ? absint( wp_unslash( $_POST['min_out'] ) ) : 0;
 
         $data = $this->build( compact( 'mode', 'root_id', 'max_depth', 'post_types', 'status', 'min_in', 'min_out' ) );
         if ( is_wp_error( $data ) ) {
@@ -61,7 +61,7 @@ final class ILSM_Architecture_Service {
         }
         check_ajax_referer( 'ilsm_admin', 'nonce' );
 
-        $post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+        $post_id = isset( $_POST['post_id'] ) ? absint( wp_unslash( $_POST['post_id'] ) ) : 0;
         $post    = $post_id ? get_post( $post_id ) : null;
         if ( ! $post || ! ILSM_SEO_Inspector::is_reportable( $post ) ) {
             wp_send_json_error( array( 'message' => __( 'The selected content is not available.', 'dma-internlink-mapper' ) ), 404 );
@@ -142,13 +142,13 @@ final class ILSM_Architecture_Service {
         $placeholders = implode( ',', array_fill( 0, count( $types ), '%s' ) );
         $node_limit = 2500;
         $edge_limit = 25000;
-        $query_args = array_merge( array( $scan_id ), $types, array( $node_limit + 1 ) );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        $query_args = array_merge( array( $pages_table, $scan_id ), $types, array( $node_limit + 1 ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned architecture data is read directly so graph metrics reflect the latest scan.
         $rows = $wpdb->get_results(
             // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- The dynamic placeholder list matches the validated argument array.
             $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-                "SELECT post_id,title,url,post_type,incoming_count,outgoing_count,weak_anchor_count,broken_count,is_orphan,seo_score FROM {$pages_table} WHERE scan_id=%d AND post_type IN ({$placeholders}) ORDER BY post_id ASC LIMIT %d",
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- Post-type placeholders are generated from a validated bounded list; table uses %i.
+                "SELECT post_id,title,url,post_type,incoming_count,outgoing_count,weak_anchor_count,broken_count,is_orphan,seo_score FROM %i WHERE scan_id=%d AND post_type IN ({$placeholders}) ORDER BY post_id ASC LIMIT %d",
                 $query_args
             ),
             ARRAY_A
@@ -225,11 +225,11 @@ final class ILSM_Architecture_Service {
             }
         }
 
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned architecture data is read directly so graph metrics reflect the latest scan.
         $link_rows = $wpdb->get_results(
             $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-                "SELECT source_post_id,target_post_id,anchor_text,issue_type,follow_status,http_status FROM {$links_table} WHERE scan_id=%d AND target_post_id>0 ORDER BY id ASC LIMIT %d",
+                'SELECT source_post_id,target_post_id,anchor_text,issue_type,follow_status,http_status FROM %i WHERE scan_id=%d AND target_post_id>0 ORDER BY id ASC LIMIT %d',
+                $links_table,
                 $scan_id,
                 $edge_limit + 1
             ),
@@ -291,19 +291,20 @@ final class ILSM_Architecture_Service {
 
         $metrics = $this->metrics( $filtered, $all_edges, $ids, $root_id );
         // Database-level totals remain separate from the bounded visualization payload.
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned scan tables; identifiers are internal allowlisted values and scan data must be current.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Database-level totals for the current plugin-owned scan must be read fresh.
         $total_matching_pages = (int) $wpdb->get_var(
+            // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- The dynamic post-type placeholder list matches the validated argument array passed below.
             $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name and placeholder list are internally generated.
-                "SELECT COUNT(*) FROM {$pages_table} WHERE scan_id=%d AND post_type IN ({$placeholders})",
-                array_merge( array( $scan_id ), $types )
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Post-type placeholders are generated from the validated bounded list; the identifier and all values are passed through wpdb::prepare().
+                "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND post_type IN ({$placeholders})",
+                array_merge( array( $pages_table, $scan_id ), $types )
             )
         );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned scan table; identifier is internally allowlisted and scan data must be current.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned architecture data is read directly so graph metrics reflect the latest scan.
         $total_internal_edges = (int) $wpdb->get_var(
             $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is an internally generated allowlisted identifier.
-                "SELECT COUNT(*) FROM {$links_table} WHERE scan_id=%d AND target_post_id>0",
+                'SELECT COUNT(*) FROM %i WHERE scan_id=%d AND target_post_id>0',
+                $links_table,
                 $scan_id
             )
         );

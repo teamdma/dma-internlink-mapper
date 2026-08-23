@@ -7,4 +7,3 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 
 You should have received a copy of the GNU General Public License along with this program. If not, see https://www.gnu.org/licenses/.
 
-Font Awesome 4.7.0 is included under the SIL Open Font License 1.1 for fonts and the MIT License for CSS. See admin/vendor/font-awesome/LICENSE.txt.

@@ -43,20 +43,18 @@ final class ILSM_Scan_Manager {
 		global $wpdb;
 		$stale_after = max( 60, absint( $stale_after ) );
 		$table       = ILSM_Database::table( 'scans' );
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be read fresh.
 		$scan        = $wpdb->get_row(
-			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-			"SELECT id,status,heartbeat_at,started_at,lock_expires FROM {$table} WHERE status='running' ORDER BY id DESC LIMIT 1",
+			$wpdb->prepare( "SELECT id,status,heartbeat_at,started_at,lock_token,lock_expires FROM %i WHERE status='running' ORDER BY id DESC LIMIT 1", $table ),
 			ARRAY_A
-		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- trusted table name.
+		);
 		$lock = ILSM_Locks::inspect( 'scan_global' );
 
 		if ( ! $scan ) {
 			if ( $lock ) {
 				$expires = strtotime( (string) $lock['expires_at'] . ' UTC' );
 				if ( $expires && $expires < time() ) {
-					ILSM_Locks::force_release( 'scan_global' );
-					return true;
+					return ILSM_Locks::release_expired( 'scan_global' );
 				}
 			}
 			return false;
@@ -71,20 +69,47 @@ final class ILSM_Scan_Manager {
 			return false;
 		}
 
-		ILSM_Locks::force_release( 'scan_global' );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-		$wpdb->update(
-			$table,
-			array(
-				'status'        => 'interrupted',
-				'lock_token'    => '',
-				'lock_expires'  => null,
-				'error_message' => __( 'The scan was automatically interrupted after its browser heartbeat stopped.', 'dma-internlink-mapper' ),
-			),
-			array( 'id' => absint( $scan['id'] ) ),
-			array( '%s', '%s', '%s', '%s' ),
-			array( '%d' )
-		);
+		/*
+		 * Re-check the exact state observed above while changing it. A batch may
+		 * refresh its heartbeat between our SELECT and this UPDATE; matching the
+		 * old heartbeat and ownership token prevents recovery from interrupting
+		 * that live request.
+		 */
+		$observed_heartbeat = (string) ( $scan['heartbeat_at'] ?? '' );
+		$observed_token     = (string) ( $scan['lock_token'] ?? '' );
+		$error_message      = __( 'The scan was automatically interrupted after its browser heartbeat stopped.', 'dma-internlink-mapper' );
+		if ( '' !== $observed_heartbeat ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Compare-and-update is required to recover stale scan state without racing a live heartbeat refresh.
+			$recovered = $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE %i SET status='interrupted',lock_token='',lock_expires=NULL,error_message=%s WHERE id=%d AND status='running' AND heartbeat_at=%s AND lock_token=%s",
+					$table,
+					$error_message,
+					absint( $scan['id'] ),
+					$observed_heartbeat,
+					$observed_token
+				)
+			);
+		} else {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Compare-and-update is required to recover stale scan state without racing a live heartbeat refresh.
+			$recovered = $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE %i SET status='interrupted',lock_token='',lock_expires=NULL,error_message=%s WHERE id=%d AND status='running' AND heartbeat_at IS NULL AND lock_token=%s",
+					$table,
+					$error_message,
+					absint( $scan['id'] ),
+					$observed_token
+				)
+			);
+		}
+		if ( 1 !== (int) $recovered ) {
+			return false;
+		}
+
+		/* Release only the lock owned by the scan state that we interrupted. */
+		if ( 64 === strlen( $observed_token ) && ctype_xdigit( $observed_token ) ) {
+			ILSM_Locks::release_by_hash( 'scan_global', $observed_token );
+		}
 		return true;
 	}
 
@@ -112,12 +137,11 @@ final class ILSM_Scan_Manager {
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
 		$fresh = ! empty( $_POST['fresh'] );
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be read fresh.
 		$running = $wpdb->get_row(
-			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-			"SELECT id,user_id,status,scanned_items,total_items,lock_expires,heartbeat_at FROM " . ILSM_Database::table( 'scans' ) . " WHERE status='running' ORDER BY id DESC LIMIT 1",
+			$wpdb->prepare( "SELECT id,user_id,status,scanned_items,total_items,lock_expires,heartbeat_at FROM %i WHERE status='running' ORDER BY id DESC LIMIT 1", ILSM_Database::table( 'scans' ) ),
 			ARRAY_A
-		); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table and literals.
+		);
 
 		/*
 		 * A deliberate fresh rescan safely retires an existing scan owned by the
@@ -159,8 +183,8 @@ final class ILSM_Scan_Manager {
 
 		$lock = ILSM_Locks::acquire( 'scan_global', 300 );
 		if ( is_wp_error( $lock ) ) {
-			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-			$running = $wpdb->get_row( "SELECT id,user_id,status,scanned_items,total_items,lock_expires,heartbeat_at FROM " . ILSM_Database::table( 'scans' ) . " WHERE status='running' ORDER BY id DESC LIMIT 1", ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be read fresh.
+			$running = $wpdb->get_row( $wpdb->prepare( "SELECT id,user_id,status,scanned_items,total_items,lock_expires,heartbeat_at FROM %i WHERE status='running' ORDER BY id DESC LIMIT 1", ILSM_Database::table( 'scans' ) ), ARRAY_A );
 			wp_send_json_error(
 				array(
 					'message' => __( 'Another administrator currently owns the active scan. Wait for it to finish or use Force unlock if it was abandoned.', 'dma-internlink-mapper' ),
@@ -217,11 +241,11 @@ final class ILSM_Scan_Manager {
 		global $wpdb;
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
-		$scan_id = isset( $_POST['scan_id'] ) ? absint( $_POST['scan_id'] ) : 0;
+		$scan_id = isset( $_POST['scan_id'] ) ? absint( wp_unslash( $_POST['scan_id'] ) ) : 0;
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
 		$token   = isset( $_POST['token'] ) ? sanitize_text_field( wp_unslash( $_POST['token'] ) ) : '';
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-		$scan    = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Database::table( 'scans' ) . ' WHERE id=%d', $scan_id ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be read fresh.
+		$scan    = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', ILSM_Database::table( 'scans' ), $scan_id ) );
 		if ( ! $scan || ! hash_equals( (string) $scan->lock_token, hash( 'sha256', $token ) ) || (int) $scan->user_id !== get_current_user_id() ) {
 			wp_send_json_error( array( 'message' => __( 'This scan session is no longer active. Use Rescan to start a fresh scan, or Resume when an interrupted scan is available.', 'dma-internlink-mapper' ) ), 403 );
 		}
@@ -476,12 +500,11 @@ final class ILSM_Scan_Manager {
 				}
 				$link_issue = $http['issue_type'] ? $http['issue_type'] : $weak;
 				$occurrence = hash( 'sha256', $post_id . '|' . $link['url'] . '|' . $anchor . '|' . $link['location'] . '|' . $index );
-				// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current scan link rows must be written immediately.
 				$ok = $wpdb->query(
 					$wpdb->prepare(
-						// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-						'INSERT IGNORE INTO ' . ILSM_Database::table( 'links' ) . ' (scan_id,occurrence_key,source_post_id,target_post_id,destination_type,destination_object_id,destination_taxonomy,destination_post_type,source_title,target_title,source_url,target_url,source_url_hash,target_url_hash,anchor_text,context_excerpt,link_location,link_type,follow_status,http_status,redirect_url,issue_type,created_at) VALUES (%d,%s,%d,%d,%s,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%d,%s,%s,%s)',
-						$scan_id, $occurrence, $post_id, $target_id, sanitize_key( $destination['type'] ?? 'unresolved' ), absint( $destination['object_id'] ?? 0 ), sanitize_key( $destination['taxonomy'] ?? '' ), sanitize_key( $destination['post_type'] ?? '' ), ILSM_Text::substring( get_the_title( $post ), 0, 255 ), ILSM_Text::substring( $target_title, 0, 255 ), $source_url, $link['url'], hash( 'sha256', $source_url ), hash( 'sha256', $link['url'] ), ILSM_Text::substring( $anchor, 0, 500 ), ILSM_Text::substring( $link['context'], 0, 1000 ), sanitize_key( $link['location'] ), sanitize_key( $link['type'] ), sanitize_key( $link['follow'] ), absint( $http['status'] ), esc_url_raw( $http['redirect_url'] ), sanitize_key( $link_issue ), current_time( 'mysql', true )
+						'INSERT IGNORE INTO %i (scan_id,occurrence_key,source_post_id,target_post_id,destination_type,destination_object_id,destination_taxonomy,destination_post_type,source_title,target_title,source_url,target_url,source_url_hash,target_url_hash,anchor_text,context_excerpt,link_location,link_type,follow_status,http_status,redirect_url,issue_type,created_at) VALUES (%d,%s,%d,%d,%s,%d,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%d,%s,%s,%s)',
+						ILSM_Database::table( 'links' ), $scan_id, $occurrence, $post_id, $target_id, sanitize_key( $destination['type'] ?? 'unresolved' ), absint( $destination['object_id'] ?? 0 ), sanitize_key( $destination['taxonomy'] ?? '' ), sanitize_key( $destination['post_type'] ?? '' ), ILSM_Text::substring( get_the_title( $post ), 0, 255 ), ILSM_Text::substring( $target_title, 0, 255 ), $source_url, $link['url'], hash( 'sha256', $source_url ), hash( 'sha256', $link['url'] ), ILSM_Text::substring( $anchor, 0, 500 ), ILSM_Text::substring( $link['context'], 0, 1000 ), sanitize_key( $link['location'] ), sanitize_key( $link['type'] ), sanitize_key( $link['follow'] ), absint( $http['status'] ), esc_url_raw( $http['redirect_url'] ), sanitize_key( $link_issue ), current_time( 'mysql', true )
 					)
 				);
 				if ( false === $ok ) {
@@ -533,11 +556,10 @@ final class ILSM_Scan_Manager {
 		global $wpdb;
 		if ( empty( $types ) ) { return array(); }
 		$placeholders = implode( ',', array_fill( 0, count( $types ), '%s' ) );
-		$args = array_merge( array( $last_post_id ), $types, array( $limit ) );
-		$sql  = "SELECT ID FROM {$wpdb->posts} WHERE ID>%d AND post_status='publish' AND post_type IN ({$placeholders}) ORDER BY ID ASC LIMIT %d";
+		$args = array_merge( array( $wpdb->posts, $last_post_id ), $types, array( $limit ) );
 		$wpdb->last_error = '';
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Core posts are scanned with cursor pagination and must be read fresh. SQL is assembled from fixed clauses and validated post-type values before prepare().
-		$rows = $wpdb->get_col( $wpdb->prepare( $sql, $args ) );
+		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Post-type placeholders are generated from a validated list; core posts identifier and all values are passed to prepare().
+		$rows = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM %i WHERE ID>%d AND post_status='publish' AND post_type IN ({$placeholders}) ORDER BY ID ASC LIMIT %d", $args ) );
 		if ( '' !== (string) $wpdb->last_error ) {
 			return new WP_Error( 'scan_cursor_query_failed', __( 'The scan could not load the next page cursor from the database. No progress was advanced.', 'dma-internlink-mapper' ) );
 		}
@@ -607,16 +629,16 @@ final class ILSM_Scan_Manager {
 		$step = __( 'final scan aggregation', 'dma-internlink-mapper' );
 
 		try {
-			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access and finalization must use fresh data.
-			$result = $wpdb->query( $wpdb->prepare( "UPDATE {$pages} p LEFT JOIN (SELECT source_post_id,COUNT(*) outgoing_count,SUM(issue_type IN ('weak_anchor','empty_anchor')) weak_count,SUM(issue_type='broken') broken_count FROM {$links} WHERE scan_id=%d AND destination_type<>'external' GROUP BY source_post_id) o ON o.source_post_id=p.post_id LEFT JOIN (SELECT target_post_id,COUNT(*) incoming_count FROM {$links} WHERE scan_id=%d AND target_post_id>0 GROUP BY target_post_id) i ON i.target_post_id=p.post_id SET p.outgoing_count=COALESCE(o.outgoing_count,0),p.incoming_count=COALESCE(i.incoming_count,0),p.weak_anchor_count=COALESCE(o.weak_count,0),p.broken_count=COALESCE(o.broken_count,0) WHERE p.scan_id=%d", $scan_id, $scan_id, $scan_id ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Finalization must aggregate fresh scan data.
+			$result = $wpdb->query( $wpdb->prepare( "UPDATE %i p LEFT JOIN (SELECT source_post_id,COUNT(*) outgoing_count,SUM(issue_type IN ('weak_anchor','empty_anchor')) weak_count,SUM(issue_type='broken') broken_count FROM %i WHERE scan_id=%d AND destination_type<>'external' GROUP BY source_post_id) o ON o.source_post_id=p.post_id LEFT JOIN (SELECT target_post_id,COUNT(*) incoming_count FROM %i WHERE scan_id=%d AND target_post_id>0 GROUP BY target_post_id) i ON i.target_post_id=p.post_id SET p.outgoing_count=COALESCE(o.outgoing_count,0),p.incoming_count=COALESCE(i.incoming_count,0),p.weak_anchor_count=COALESCE(o.weak_count,0),p.broken_count=COALESCE(o.broken_count,0) WHERE p.scan_id=%d", $pages, $links, $scan_id, $links, $scan_id, $scan_id ) );
 			if ( false === $result ) {
 				throw new RuntimeException( $step );
 			}
 
 			$step = __( 'render-verification count', 'dma-internlink-mapper' );
 			$wpdb->last_error = '';
-			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifier is produced by the strict ILSM_Database allowlist. Finalization must read fresh mutable scan data.
-			$unverified_raw = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$pages} WHERE scan_id=%d AND render_verified=0", $scan_id ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Finalization must read fresh mutable scan data.
+			$unverified_raw = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND render_verified=0", $pages, $scan_id ) );
 			if ( '' !== (string) $wpdb->last_error || null === $unverified_raw ) {
 				throw new RuntimeException( $step );
 			}
@@ -624,12 +646,12 @@ final class ILSM_Scan_Manager {
 
 			$step = __( 'orphan-state reconciliation', 'dma-internlink-mapper' );
 			if ( 0 === $unverified ) {
-				// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table identifier is produced by the strict ILSM_Database allowlist. Mutable scan data must be updated immediately.
-				$result = $wpdb->query( $wpdb->prepare( "UPDATE {$pages} SET is_orphan=IF(incoming_count=0,1,0) WHERE scan_id=%d", $scan_id ) );
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be updated immediately.
+				$result = $wpdb->query( $wpdb->prepare( "UPDATE %i SET is_orphan=IF(incoming_count=0,1,0) WHERE scan_id=%d", $pages, $scan_id ) );
 			} else {
 				/* Never assert orphan status from a crawl that could not verify every rendered source page. */
-				// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table identifier is produced by the strict ILSM_Database allowlist. Mutable scan data must be updated immediately.
-				$result = $wpdb->query( $wpdb->prepare( "UPDATE {$pages} SET is_orphan=0 WHERE scan_id=%d", $scan_id ) );
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be updated immediately.
+				$result = $wpdb->query( $wpdb->prepare( "UPDATE %i SET is_orphan=0 WHERE scan_id=%d", $pages, $scan_id ) );
 			}
 			if ( false === $result ) {
 				throw new RuntimeException( $step );
@@ -644,8 +666,8 @@ final class ILSM_Scan_Manager {
 			}
 			if ( 0 === $unverified ) {
 				$prefix = __( 'Page has no incoming internal links: ', 'dma-internlink-mapper' );
-				// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Values are passed through prepare(); derived issue rows must be written immediately.
-				$result = $wpdb->query( $wpdb->prepare( "INSERT INTO {$issues} (scan_id,post_id,issue_type,severity,message,created_at) SELECT scan_id,post_id,'orphan_page','high',CONCAT(%s,title),UTC_TIMESTAMP() FROM {$pages} WHERE scan_id=%d AND is_orphan=1", $prefix, $scan_id ) );
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Derived issue rows must be reconciled immediately.
+				$result = $wpdb->query( $wpdb->prepare( "INSERT INTO %i (scan_id,post_id,issue_type,severity,message,created_at) SELECT scan_id,post_id,'orphan_page','high',CONCAT(%s,title),UTC_TIMESTAMP() FROM %i WHERE scan_id=%d AND is_orphan=1", $issues, $prefix, $pages, $scan_id ) );
 				if ( false === $result ) {
 					throw new RuntimeException( $step );
 				}
@@ -653,8 +675,8 @@ final class ILSM_Scan_Manager {
 
 			$step = __( 'issue count', 'dma-internlink-mapper' );
 			$wpdb->last_error = '';
-			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifier is produced by the strict ILSM_Database allowlist. Finalization must read fresh mutable scan data.
-			$count_raw = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$issues} WHERE scan_id=%d", $scan_id ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Finalization must read fresh mutable scan data.
+			$count_raw = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d", $issues, $scan_id ) );
 			if ( '' !== (string) $wpdb->last_error || null === $count_raw ) {
 				throw new RuntimeException( $step );
 			}
@@ -730,8 +752,8 @@ final class ILSM_Scan_Manager {
 			$local_post = get_post( $local_post_id );
 			if ( ILSM_SEO_Inspector::is_indexable( $local_post ) ) { return $request_cache[ $hash ] = array( 'status' => 200, 'redirect_url' => '', 'issue_type' => '' ); }
 		}
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-		$existing = $wpdb->get_row( $wpdb->prepare( 'SELECT http_status,redirect_url,issue_type FROM ' . ILSM_Database::table( 'links' ) . ' WHERE scan_id=%d AND target_url_hash=%s AND http_status>0 ORDER BY id DESC LIMIT 1', absint( $scan_id ), $hash ), ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current link health must be read fresh.
+		$existing = $wpdb->get_row( $wpdb->prepare( 'SELECT http_status,redirect_url,issue_type FROM %i WHERE scan_id=%d AND target_url_hash=%s AND http_status>0 ORDER BY id DESC LIMIT 1', ILSM_Database::table( 'links' ), absint( $scan_id ), $hash ), ARRAY_A );
 		if ( $existing ) { return $request_cache[ $hash ] = array( 'status' => absint( $existing['http_status'] ), 'redirect_url' => (string) $existing['redirect_url'], 'issue_type' => in_array( $existing['issue_type'], array( 'broken', 'redirect' ), true ) ? $existing['issue_type'] : '' ); }
 		$transient_key = 'ilsm_http_' . substr( $hash, 0, 32 );
 		$cached = get_transient( $transient_key );
@@ -802,13 +824,13 @@ final class ILSM_Scan_Manager {
 		global $wpdb;
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by guard().
-		$scan_id = isset( $_POST['scan_id'] ) ? absint( $_POST['scan_id'] ) : 0;
+		$scan_id = isset( $_POST['scan_id'] ) ? absint( wp_unslash( $_POST['scan_id'] ) ) : 0;
 		if ( ! $scan_id ) {
 			wp_send_json_error( array( 'message' => __( 'A valid scan is required.', 'dma-internlink-mapper' ) ), 400 );
 		}
 
 		$scans_table = ILSM_Database::table( 'scans' );
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- %i safely quotes the strict allowlisted plugin table identifier; mutable scan state must be read fresh.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be read fresh.
 		$scan = $wpdb->get_row(
 			$wpdb->prepare(
 				'SELECT id,user_id,status,scanned_items,total_items,heartbeat_at,lock_expires,error_message FROM %i WHERE id=%d',
@@ -854,7 +876,7 @@ final class ILSM_Scan_Manager {
 		$this->guard();
 		global $wpdb;
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by guard().
-		$scan_id = isset( $_POST['scan_id'] ) ? absint( $_POST['scan_id'] ) : 0;
+		$scan_id = isset( $_POST['scan_id'] ) ? absint( wp_unslash( $_POST['scan_id'] ) ) : 0;
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by guard().
 		$action  = isset( $_POST['scan_action'] ) ? sanitize_key( wp_unslash( $_POST['scan_action'] ) ) : '';
 
@@ -864,11 +886,11 @@ final class ILSM_Scan_Manager {
 			}
 			ILSM_Locks::force_release( 'scan_global' );
 			$cleared_message = __( 'Lock was manually cleared.', 'dma-internlink-mapper' );
-			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned mutable scan table; identifier comes from the strict ILSM_Database allowlist and the translated message is passed as a placeholder.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Force-unlock must update mutable scan state immediately.
 			$wpdb->query(
 				$wpdb->prepare(
-					// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL uses an internally allowlisted identifier and prepared value placeholder.
-					"UPDATE " . ILSM_Database::table( 'scans' ) . " SET status='interrupted',lock_token='',lock_expires=NULL,error_message=%s WHERE status='running'",
+					"UPDATE %i SET status='interrupted',lock_token='',lock_expires=NULL,error_message=%s WHERE status='running'",
+					ILSM_Database::table( 'scans' ),
 					$cleared_message
 				)
 			);
@@ -880,8 +902,8 @@ final class ILSM_Scan_Manager {
 			wp_send_json_error( array( 'message' => __( 'Invalid action.', 'dma-internlink-mapper' ) ), 400 );
 		}
 
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Identifier comes from the strict internal allowlist and mutable scan state must be read fresh.
-		$scan = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Database::table( 'scans' ) . ' WHERE id=%d', $scan_id ), ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan state must be read fresh.
+		$scan = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', ILSM_Database::table( 'scans' ), $scan_id ), ARRAY_A );
 		if ( ! $scan ) {
 			wp_send_json_error( array( 'message' => __( 'The selected scan no longer exists.', 'dma-internlink-mapper' ) ), 404 );
 		}
@@ -1173,13 +1195,13 @@ final class ILSM_Scan_Manager {
 		$this->guard( 'ilsm_view_reports' );
 		global $wpdb;
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
-		$scan_id = isset( $_POST['scan_id'] ) ? absint( $_POST['scan_id'] ) : ILSM_Database::latest_completed_scan_id();
+		$scan_id = isset( $_POST['scan_id'] ) ? absint( wp_unslash( $_POST['scan_id'] ) ) : ILSM_Database::latest_completed_scan_id();
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verification is handled by the called authenticated action or surrounding request guard.
-		$post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-		if ( ! $post_id ) { $post_id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT post_id FROM ' . ILSM_Database::table( 'pages' ) . ' WHERE scan_id=%d ORDER BY seo_score DESC LIMIT 1', $scan_id ) ); }
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-		$page = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Database::table( 'pages' ) . ' WHERE scan_id=%d AND post_id=%d', $scan_id, $post_id ), ARRAY_A );
+		$post_id = isset( $_POST['post_id'] ) ? absint( wp_unslash( $_POST['post_id'] ) ) : 0;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current map snapshot must be read fresh.
+		if ( ! $post_id ) { $post_id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT post_id FROM %i WHERE scan_id=%d ORDER BY seo_score DESC LIMIT 1', ILSM_Database::table( 'pages' ), $scan_id ) ); }
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current map snapshot must be read fresh.
+		$page = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE scan_id=%d AND post_id=%d', ILSM_Database::table( 'pages' ), $scan_id, $post_id ), ARRAY_A );
 		if ( ! $page ) {
 			$post = get_post( $post_id );
 			$type = $post ? get_post_type_object( $post->post_type ) : null;
@@ -1195,10 +1217,10 @@ final class ILSM_Scan_Manager {
 			}
 			wp_send_json_error( array( 'code' => 'page_not_in_scan', 'message' => $message, 'post_id' => $post_id ), 404 );
 		}
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-		$incoming = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id AS id,source_title AS title,source_url AS url,'post' AS object_type,source_post_id AS object_id,'' AS taxonomy,'' AS post_type,anchor_text,issue_type FROM " . ILSM_Database::table( 'links' ) . ' WHERE scan_id=%d AND target_post_id=%d ORDER BY id DESC LIMIT 500', $scan_id, $post_id ), ARRAY_A );
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-		$outgoing = $wpdb->get_results( $wpdb->prepare( 'SELECT id AS link_id,target_post_id AS id,target_title AS title,target_url AS url,destination_type AS object_type,destination_object_id AS object_id,destination_taxonomy AS taxonomy,destination_post_type AS post_type,anchor_text,issue_type FROM ' . ILSM_Database::table( 'links' ) . ' WHERE scan_id=%d AND source_post_id=%d ORDER BY id DESC LIMIT 500', $scan_id, $post_id ), ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current map relationships must be read fresh.
+		$incoming = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id AS id,source_title AS title,source_url AS url,'post' AS object_type,source_post_id AS object_id,'' AS taxonomy,'' AS post_type,anchor_text,issue_type FROM %i WHERE scan_id=%d AND target_post_id=%d ORDER BY id DESC LIMIT 500", ILSM_Database::table( 'links' ), $scan_id, $post_id ), ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current map relationships must be read fresh.
+		$outgoing = $wpdb->get_results( $wpdb->prepare( 'SELECT id AS link_id,target_post_id AS id,target_title AS title,target_url AS url,destination_type AS object_type,destination_object_id AS object_id,destination_taxonomy AS taxonomy,destination_post_type AS post_type,anchor_text,issue_type FROM %i WHERE scan_id=%d AND source_post_id=%d ORDER BY id DESC LIMIT 500', ILSM_Database::table( 'links' ), $scan_id, $post_id ), ARRAY_A );
 		foreach ( $outgoing as &$outgoing_node ) {
 			if ( 'external' === (string) ( $outgoing_node['object_type'] ?? '' ) ) {
 				if ( '' === trim( (string) ( $outgoing_node['title'] ?? '' ) ) || '0' === trim( (string) $outgoing_node['title'] ) ) {

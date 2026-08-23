@@ -4,6 +4,9 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 class ILSM_Admin {
     private static $instance;
 
+    const PDF_APPENDIX_LIMIT = 500;
+    const PDF_APPENDIX_BATCH = 100;
+
     public static function instance() {
         return self::$instance ?: ( self::$instance = new self() );
     }
@@ -150,6 +153,40 @@ class ILSM_Admin {
         return '<div class="ilsm-panel-head"><h2><i class="fa ' . esc_attr( $icon ) . '" aria-hidden="true"></i>' . esc_html( $this->display_text( $title ) ) . '</h2>' . $tools . '</div>';
     }
 
+
+    /**
+     * Allow only the small set of HTML used by plugin-owned admin helper markup.
+     *
+     * Helper methods return markup so callers can compose admin sections. Every
+     * helper result is passed through wp_kses() at the final output boundary.
+     *
+     * @return array<string,array<string,bool>>
+     */
+    private function admin_helper_allowed_html() {
+        return array(
+            'a'      => array( 'href' => true, 'class' => true, 'target' => true, 'rel' => true, 'aria-label' => true ),
+            'button' => array( 'type' => true, 'class' => true, 'id' => true, 'title' => true, 'style' => true, 'data-post-id' => true, 'aria-label' => true, 'aria-disabled' => true, 'disabled' => true ),
+            'div'    => array( 'class' => true, 'id' => true ),
+            'h2'     => array( 'class' => true, 'id' => true ),
+            'h3'     => array( 'class' => true, 'id' => true ),
+            'i'      => array( 'class' => true, 'aria-hidden' => true ),
+            'li'     => array( 'class' => true ),
+            'nav'    => array( 'class' => true, 'aria-label' => true ),
+            'option' => array( 'value' => true, 'selected' => true ),
+            'p'      => array( 'class' => true ),
+            'small'  => array( 'class' => true ),
+            'span'   => array( 'class' => true, 'id' => true, 'aria-current' => true ),
+            'strong' => array( 'class' => true, 'id' => true ),
+            'table'  => array( 'class' => true ),
+            'tbody'  => array(),
+            'td'     => array( 'class' => true, 'colspan' => true ),
+            'th'     => array( 'class' => true, 'scope' => true ),
+            'thead'  => array(),
+            'tr'     => array( 'class' => true ),
+            'ul'     => array( 'class' => true ),
+        );
+    }
+
     public function dashboard() {
         $this->header( __( 'DMA InternLink Mapper', 'dma-internlink-mapper' ), __( 'Private, manual internal-link scanning with local reports and visual maps.', 'dma-internlink-mapper' ) );
         $scan               = $this->latest();
@@ -190,8 +227,7 @@ class ILSM_Admin {
             // translators: %s is the dashboard metric label.
             echo '<a class="ilsm-kpi" href="' . esc_url( $card[5] ) . '" aria-label="' . esc_attr( sprintf( __( 'View %s', 'dma-internlink-mapper' ), $card[0] ) ) . '">';
             echo '<span class="ilsm-kpi-icon is-' . esc_attr( $card[3] ) . '"><i class="fa ' . esc_attr( $card[2] ) . '"></i></span>';
-            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-            echo '<div><span class="ilsm-kpi-label">' . esc_html( $card[0] ) . '</span><strong data-count="' . absint( $card[1] ) . '">' . number_format_i18n( $card[1] ) . '</strong><small>' . esc_html( $card[4] ) . '</small></div>';
+            echo '<div><span class="ilsm-kpi-label">' . esc_html( $card[0] ) . '</span><strong data-count="' . absint( $card[1] ) . '">' . esc_html( number_format_i18n( $card[1] ) ) . '</strong><small>' . esc_html( $card[4] ) . '</small></div>';
             echo '<span class="ilsm-kpi-arrow"><i class="fa fa-arrow-right"></i></span>';
             echo '</a>';
         }
@@ -200,8 +236,7 @@ class ILSM_Admin {
         echo '<div class="ilsm-dashboard-grid">';
         echo '<div class="ilsm-left-column">';
 
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<section class="ilsm-panel">' . $this->panel_title( 'fa-line-chart', __( 'Scan Progress', 'dma-internlink-mapper' ) );
+        echo '<section class="ilsm-panel">' . wp_kses( $this->panel_title( 'fa-line-chart', __( 'Scan Progress', 'dma-internlink-mapper' ) ), $this->admin_helper_allowed_html() );
         echo '<div class="ilsm-progress-row"><span>' . esc_html__( 'Overall progress', 'dma-internlink-mapper' ) . '</span><b id="ilsm-percent">' . esc_html( $scan['percent'] ) . '%</b></div>';
         echo '<div class="ilsm-progress"><span style="width:' . esc_attr( $scan['percent'] ) . '%"></span></div>';
         echo '<div class="ilsm-scan-meta"><div><small>' . esc_html__( 'Current batch', 'dma-internlink-mapper' ) . '</small><strong>' . absint( $scan['batch_no'] ?? 0 ) . '</strong></div><div><small>' . esc_html__( 'Scanned', 'dma-internlink-mapper' ) . '</small><strong id="ilsm-scanned">' . absint( $scan['scanned_items'] ?? 0 ) . ' / ' . absint( $scan['total_items'] ?? 0 ) . '</strong></div><div><small>' . esc_html__( 'Status', 'dma-internlink-mapper' ) . '</small><strong id="ilsm-status">' . esc_html( ucfirst( $scan['status'] ) ) . '</strong></div></div>';
@@ -213,8 +248,7 @@ class ILSM_Admin {
         echo '<p class="ilsm-muted"><i class="fa fa-shield" aria-hidden="true"></i> ' . esc_html__( 'Batches are intentionally limited to reduce database and CPU load.', 'dma-internlink-mapper' ) . '</p>';
         echo '</section>';
 
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<section class="ilsm-panel ilsm-color-panel">' . $this->panel_title( 'fa-paint-brush', __( 'Link Colors', 'dma-internlink-mapper' ) );
+        echo '<section class="ilsm-panel ilsm-color-panel">' . wp_kses( $this->panel_title( 'fa-paint-brush', __( 'Link Colors', 'dma-internlink-mapper' ) ), $this->admin_helper_allowed_html() );
         $settings = get_option( 'ilsm_settings', array() );
         $colors = array( 'incoming_color' => __( 'Incoming', 'dma-internlink-mapper' ), 'outgoing_color' => __( 'Outgoing', 'dma-internlink-mapper' ), 'broken_color' => __( 'Broken', 'dma-internlink-mapper' ), 'redirect_color' => __( 'Redirect', 'dma-internlink-mapper' ) );
         echo '<div class="ilsm-color-grid">';
@@ -226,23 +260,18 @@ class ILSM_Admin {
         echo '</div>';
 
         echo '<div class="ilsm-main-column">';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<section class="ilsm-panel ilsm-map-card" id="ilsm-map-panel">' . $this->panel_title( 'fa-bullseye', __( 'Wheel View', 'dma-internlink-mapper' ), '<div class="ilsm-map-actions"><button type="button" class="ilsm-icon-btn" id="ilsm-fit-map" title="' . esc_attr__( 'Fit map to view', 'dma-internlink-mapper' ) . '" aria-label="' . esc_attr__( 'Fit map to view', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrows-alt" aria-hidden="true"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-big-map" title="' . esc_attr__( 'Open large map', 'dma-internlink-mapper' ) . '" aria-label="' . esc_attr__( 'Open large map', 'dma-internlink-mapper' ) . '"><i class="fa fa-expand" aria-hidden="true"></i></button></div>' );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div class="ilsm-map-toolbar"><select id="ilsm-page-search" aria-label="' . esc_attr__( 'Select page', 'dma-internlink-mapper' ) . '">' . $this->page_options( $best['post_id'] ?? 0 ) . '</select><select id="ilsm-map-style" aria-label="' . esc_attr__( 'Map style', 'dma-internlink-mapper' ) . '"><option value="wheel">' . esc_html__( 'Wheel', 'dma-internlink-mapper' ) . '</option><option value="radial">' . esc_html__( 'Radial', 'dma-internlink-mapper' ) . '</option><option value="flow">' . esc_html__( 'Flow', 'dma-internlink-mapper' ) . '</option><option value="compact">' . esc_html__( 'Compact', 'dma-internlink-mapper' ) . '</option><option value="organic">' . esc_html__( 'Organic', 'dma-internlink-mapper' ) . '</option></select><button class="ilsm-btn ilsm-btn-small" id="ilsm-load-map"><i class="fa fa-refresh" aria-hidden="true"></i> ' . esc_html__( 'Load', 'dma-internlink-mapper' ) . '</button></div>';
+        echo '<section class="ilsm-panel ilsm-map-card" id="ilsm-map-panel">' . wp_kses( $this->panel_title( 'fa-bullseye', __( 'Wheel View', 'dma-internlink-mapper' ), '<div class="ilsm-map-actions"><button type="button" class="ilsm-icon-btn" id="ilsm-fit-map" title="' . esc_attr__( 'Fit map to view', 'dma-internlink-mapper' ) . '" aria-label="' . esc_attr__( 'Fit map to view', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrows-alt" aria-hidden="true"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-big-map" title="' . esc_attr__( 'Open large map', 'dma-internlink-mapper' ) . '" aria-label="' . esc_attr__( 'Open large map', 'dma-internlink-mapper' ) . '"><i class="fa fa-expand" aria-hidden="true"></i></button></div>' ), $this->admin_helper_allowed_html() );
+        echo '<div class="ilsm-map-toolbar"><select id="ilsm-page-search" aria-label="' . esc_attr__( 'Select page', 'dma-internlink-mapper' ) . '">' . wp_kses( $this->page_options( $best['post_id'] ?? 0 ), $this->admin_helper_allowed_html() ) . '</select><select id="ilsm-map-style" aria-label="' . esc_attr__( 'Map style', 'dma-internlink-mapper' ) . '"><option value="wheel">' . esc_html__( 'Wheel', 'dma-internlink-mapper' ) . '</option><option value="radial">' . esc_html__( 'Radial', 'dma-internlink-mapper' ) . '</option><option value="flow">' . esc_html__( 'Flow', 'dma-internlink-mapper' ) . '</option><option value="compact">' . esc_html__( 'Compact', 'dma-internlink-mapper' ) . '</option><option value="organic">' . esc_html__( 'Organic', 'dma-internlink-mapper' ) . '</option></select><button class="ilsm-btn ilsm-btn-small" id="ilsm-load-map"><i class="fa fa-refresh" aria-hidden="true"></i> ' . esc_html__( 'Load', 'dma-internlink-mapper' ) . '</button></div>';
         echo '<div class="ilsm-svg-wrap"><svg id="ilsm-wheel" viewBox="0 0 900 520" role="img" aria-label="' . esc_attr__( 'Internal link wheel map', 'dma-internlink-mapper' ) . '"></svg></div>';
         echo '<div class="ilsm-legend"><span class="in">' . esc_html__( 'Incoming', 'dma-internlink-mapper' ) . '</span><span class="out">' . esc_html__( 'Internal outgoing', 'dma-internlink-mapper' ) . '</span><span class="external">' . esc_html__( 'External', 'dma-internlink-mapper' ) . '</span><span class="bad">' . esc_html__( 'Broken', 'dma-internlink-mapper' ) . '</span><span class="redirect">' . esc_html__( 'Redirect', 'dma-internlink-mapper' ) . '</span></div>';
         echo '</section>';
 
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<section class="ilsm-panel ilsm-report-preview">' . $this->panel_title( 'fa-table', __( 'Link Report', 'dma-internlink-mapper' ), '<a class="ilsm-text-link" href="' . esc_url( admin_url( 'admin.php?page=ilsm-link-report' ) ) . '">' . esc_html__( 'Full report', 'dma-internlink-mapper' ) . ' <i class="fa fa-arrow-right" aria-hidden="true"></i></a>' ) . $this->link_preview_table() . '</section>';
+        echo '<section class="ilsm-panel ilsm-report-preview">' . wp_kses( $this->panel_title( 'fa-table', __( 'Link Report', 'dma-internlink-mapper' ), '<a class="ilsm-text-link" href="' . esc_url( admin_url( 'admin.php?page=ilsm-link-report' ) ) . '">' . esc_html__( 'Full report', 'dma-internlink-mapper' ) . ' <i class="fa fa-arrow-right" aria-hidden="true"></i></a>' ), $this->admin_helper_allowed_html() ) . wp_kses( $this->link_preview_table(), $this->admin_helper_allowed_html() ) . '</section>';
         echo '</div>';
 
         echo '<div class="ilsm-right-column">';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<section class="ilsm-panel ilsm-tree-panel">' . $this->panel_title( 'fa-folder-open-o', __( 'Tree View', 'dma-internlink-mapper' ) ) . '<div id="ilsm-tree" class="ilsm-tree"><div class="ilsm-empty"><i class="fa fa-sitemap"></i><p>' . esc_html__( 'Run a scan to build the link tree.', 'dma-internlink-mapper' ) . '</p></div></div></section>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<section class="ilsm-panel ilsm-insights">' . $this->panel_title( 'fa-lightbulb-o', __( 'Page Insights', 'dma-internlink-mapper' ) );
+        echo '<section class="ilsm-panel ilsm-tree-panel">' . wp_kses( $this->panel_title( 'fa-folder-open-o', __( 'Tree View', 'dma-internlink-mapper' ) ), $this->admin_helper_allowed_html() ) . '<div id="ilsm-tree" class="ilsm-tree"><div class="ilsm-empty"><i class="fa fa-sitemap"></i><p>' . esc_html__( 'Run a scan to build the link tree.', 'dma-internlink-mapper' ) . '</p></div></div></section>';
+        echo '<section class="ilsm-panel ilsm-insights">' . wp_kses( $this->panel_title( 'fa-lightbulb-o', __( 'Page Insights', 'dma-internlink-mapper' ) ), $this->admin_helper_allowed_html() );
         $score = min( 100, absint( $best['seo_score'] ?? 0 ) );
         $score_label = $score >= 80 ? __( 'Excellent', 'dma-internlink-mapper' ) : ( $score >= 60 ? __( 'Good', 'dma-internlink-mapper' ) : __( 'Needs work', 'dma-internlink-mapper' ) );
         echo '<div class="ilsm-score-wrap">';
@@ -252,23 +281,22 @@ class ILSM_Admin {
         echo '<span class="ilsm-score-number"><strong id="ilsm-map-score">' . esc_html( $score ) . '</strong><small>/100</small></span></div>';
         echo '<div><strong id="ilsm-map-insight-title">' . esc_html( $this->display_text( $best['title'] ?? __( 'No page selected', 'dma-internlink-mapper' ) ) ) . '</strong><small id="ilsm-map-insight-label">' . esc_html( $score_label ) . '</small></div></div>';
         echo '<div id="ilsm-insight-metrics" class="ilsm-insight-metrics"><div><i class="fa fa-arrow-down"></i><span>' . esc_html__( 'Incoming', 'dma-internlink-mapper' ) . '</span><b>' . absint( $best['incoming_count'] ?? 0 ) . '</b></div><div><i class="fa fa-arrow-up"></i><span>' . esc_html__( 'Outgoing', 'dma-internlink-mapper' ) . '</span><b>' . absint( $best['outgoing_count'] ?? 0 ) . '</b></div><div><i class="fa fa-font"></i><span>' . esc_html__( 'Weak anchors', 'dma-internlink-mapper' ) . '</span><b>' . absint( $best['weak_anchor_count'] ?? 0 ) . '</b></div></div>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div id="ilsm-map-recommendations" class="ilsm-recommendations"><h3>' . esc_html__( 'Recommendations', 'dma-internlink-mapper' ) . '</h3>' . $this->recommendations( $best ) . '</div>';
+        echo '<div id="ilsm-map-recommendations" class="ilsm-recommendations"><h3>' . esc_html__( 'Recommendations', 'dma-internlink-mapper' ) . '</h3>' . wp_kses( $this->recommendations( $best ), $this->admin_helper_allowed_html() ) . '</div>';
         echo '</section></div></div>';
 
         $this->footer();
     }
 
     public function link_opportunities() {
-        $this->header( 'Link Opportunities', 'Discover relevant internal-link opportunities from the latest local scan.' );
+        $this->header( __( 'Link Opportunities', 'dma-internlink-mapper' ), __( 'Discover relevant internal-link opportunities from the latest local scan.', 'dma-internlink-mapper' ) );
         ILSM_Link_Opportunities::render();
         $this->footer();
     }
 
     public function visual_map() {
-        $this->header( 'Visual Map', 'Explore your site’s internal linking structure and architecture.' );
+        $this->header( __( 'Visual Map', 'dma-internlink-mapper' ), __( 'Explore your site’s internal linking structure and architecture.', 'dma-internlink-mapper' ) );
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin filtering; no state is changed.
-        $selected_post = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0;
+        $selected_post = isset( $_GET['post_id'] ) ? absint( wp_unslash( $_GET['post_id'] ) ) : 0;
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin filtering; no state is changed.
         $requested_view = isset( $_GET['view'] ) ? sanitize_key( wp_unslash( $_GET['view'] ) ) : 'link-map';
         $view = in_array( $requested_view, array( 'link-map', 'page-architecture', 'site-architecture', 'knowledge-graph' ), true ) ? $requested_view : 'link-map';
@@ -308,14 +336,11 @@ class ILSM_Admin {
 
         echo '<div id="ilsm-panel-link-map" class="ilsm-map-tabpanel ' . ( 'link-map' === $view ? 'is-active' : '' ) . '" role="tabpanel" aria-labelledby="ilsm-tab-link-map" ' . ( 'link-map' === $view ? '' : 'hidden' ) . '>';
         echo '<section class="ilsm-panel ilsm-map-card ilsm-map-full ilsm-map-modern" id="ilsm-map-panel">';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div class="ilsm-map-toolbar"><select id="ilsm-page-search" aria-label="' . esc_attr__( 'Select a scanned page', 'dma-internlink-mapper' ) . '">' . $this->page_options( $selected_post ) . '</select><select id="ilsm-map-style" aria-label="' . esc_attr__( 'Map style', 'dma-internlink-mapper' ) . '"><option value="wheel">' . esc_html__( 'Wheel', 'dma-internlink-mapper' ) . '</option><option value="radial">' . esc_html__( 'Radial', 'dma-internlink-mapper' ) . '</option><option value="flow">' . esc_html__( 'Flow', 'dma-internlink-mapper' ) . '</option><option value="compact">' . esc_html__( 'Compact', 'dma-internlink-mapper' ) . '</option><option value="organic">' . esc_html__( 'Organic', 'dma-internlink-mapper' ) . '</option></select><input type="search" id="ilsm-map-filter" class="ilsm-map-filter" placeholder="' . esc_attr__( 'Find a node…', 'dma-internlink-mapper' ) . '" aria-label="' . esc_attr__( 'Find a node', 'dma-internlink-mapper' ) . '"><button class="ilsm-btn ilsm-btn-primary" id="ilsm-load-map"><i class="fa fa-refresh"></i> ' . esc_html__( 'Load Map', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-icon-btn" id="ilsm-zoom-out" aria-label="' . esc_attr__( 'Zoom out', 'dma-internlink-mapper' ) . '"><i class="fa fa-search-minus"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-zoom-in" aria-label="' . esc_attr__( 'Zoom in', 'dma-internlink-mapper' ) . '"><i class="fa fa-search-plus"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-fit-map" aria-label="' . esc_attr__( 'Fit map', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrows-alt"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-big-map" aria-label="' . esc_attr__( 'Open large map', 'dma-internlink-mapper' ) . '"><i class="fa fa-expand"></i></button></div>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div class="ilsm-map-page-grid"><div class="ilsm-map-stage"><div class="ilsm-svg-wrap"><svg id="ilsm-wheel" viewBox="0 0 900 520" role="img" aria-label="' . esc_attr__( 'Link relationship visual map', 'dma-internlink-mapper' ) . '"></svg></div><div class="ilsm-legend"><span class="in">' . esc_html__( 'Incoming', 'dma-internlink-mapper' ) . '</span><span class="out">' . esc_html__( 'Internal outgoing', 'dma-internlink-mapper' ) . '</span><span class="external">' . esc_html__( 'External', 'dma-internlink-mapper' ) . '</span><span class="bad">' . esc_html__( 'Broken', 'dma-internlink-mapper' ) . '</span><span class="redirect">' . esc_html__( 'Redirect', 'dma-internlink-mapper' ) . '</span></div></div><aside class="ilsm-map-sidebar"><section class="ilsm-panel ilsm-tree-panel">' . $this->panel_title( 'fa-folder-open-o', __( 'Tree View', 'dma-internlink-mapper' ) ) . '<div id="ilsm-tree" class="ilsm-tree"></div></section><section class="ilsm-panel ilsm-insights ilsm-map-insights">' . $this->panel_title( 'fa-lightbulb-o', __( 'Page Insights', 'dma-internlink-mapper' ) );
+        echo '<div class="ilsm-map-toolbar"><select id="ilsm-page-search" aria-label="' . esc_attr__( 'Select a scanned page', 'dma-internlink-mapper' ) . '">' . wp_kses( $this->page_options( $selected_post ), $this->admin_helper_allowed_html() ) . '</select><select id="ilsm-map-style" aria-label="' . esc_attr__( 'Map style', 'dma-internlink-mapper' ) . '"><option value="wheel">' . esc_html__( 'Wheel', 'dma-internlink-mapper' ) . '</option><option value="radial">' . esc_html__( 'Radial', 'dma-internlink-mapper' ) . '</option><option value="flow">' . esc_html__( 'Flow', 'dma-internlink-mapper' ) . '</option><option value="compact">' . esc_html__( 'Compact', 'dma-internlink-mapper' ) . '</option><option value="organic">' . esc_html__( 'Organic', 'dma-internlink-mapper' ) . '</option></select><input type="search" id="ilsm-map-filter" class="ilsm-map-filter" placeholder="' . esc_attr__( 'Find a node…', 'dma-internlink-mapper' ) . '" aria-label="' . esc_attr__( 'Find a node', 'dma-internlink-mapper' ) . '"><button class="ilsm-btn ilsm-btn-primary" id="ilsm-load-map"><i class="fa fa-refresh"></i> ' . esc_html__( 'Load Map', 'dma-internlink-mapper' ) . '</button><button type="button" class="ilsm-icon-btn" id="ilsm-zoom-out" aria-label="' . esc_attr__( 'Zoom out', 'dma-internlink-mapper' ) . '"><i class="fa fa-search-minus"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-zoom-in" aria-label="' . esc_attr__( 'Zoom in', 'dma-internlink-mapper' ) . '"><i class="fa fa-search-plus"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-fit-map" aria-label="' . esc_attr__( 'Fit map', 'dma-internlink-mapper' ) . '"><i class="fa fa-arrows-alt"></i></button><button type="button" class="ilsm-icon-btn" id="ilsm-big-map" aria-label="' . esc_attr__( 'Open large map', 'dma-internlink-mapper' ) . '"><i class="fa fa-expand"></i></button></div>';
+        echo '<div class="ilsm-map-page-grid"><div class="ilsm-map-stage"><div class="ilsm-svg-wrap"><svg id="ilsm-wheel" viewBox="0 0 900 520" role="img" aria-label="' . esc_attr__( 'Link relationship visual map', 'dma-internlink-mapper' ) . '"></svg></div><div class="ilsm-legend"><span class="in">' . esc_html__( 'Incoming', 'dma-internlink-mapper' ) . '</span><span class="out">' . esc_html__( 'Internal outgoing', 'dma-internlink-mapper' ) . '</span><span class="external">' . esc_html__( 'External', 'dma-internlink-mapper' ) . '</span><span class="bad">' . esc_html__( 'Broken', 'dma-internlink-mapper' ) . '</span><span class="redirect">' . esc_html__( 'Redirect', 'dma-internlink-mapper' ) . '</span></div></div><aside class="ilsm-map-sidebar"><section class="ilsm-panel ilsm-tree-panel">' . wp_kses( $this->panel_title( 'fa-folder-open-o', __( 'Tree View', 'dma-internlink-mapper' ) ), $this->admin_helper_allowed_html() ) . '<div id="ilsm-tree" class="ilsm-tree"></div></section><section class="ilsm-panel ilsm-insights ilsm-map-insights">' . wp_kses( $this->panel_title( 'fa-lightbulb-o', __( 'Page Insights', 'dma-internlink-mapper' ) ), $this->admin_helper_allowed_html() );
         $score=min(100,absint($best['seo_score']??0));$label=$score>=80?'Excellent':($score>=60?'Good':'Needs work');
         echo '<div class="ilsm-score-wrap"><div class="ilsm-score-ring"><svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ilsm-score-track" cx="60" cy="60" r="48"/><circle id="ilsm-map-score-progress" class="ilsm-score-progress" cx="60" cy="60" r="48" pathLength="100" stroke-dasharray="' . esc_attr($score) . ' 100"/></svg><span class="ilsm-score-number"><strong id="ilsm-map-score">' . esc_html($score) . '</strong><small>/100</small></span></div><div><strong id="ilsm-map-insight-title">' . esc_html($this->display_text($best['title'] ?? __( 'No page selected', 'dma-internlink-mapper' ))) . '</strong><small id="ilsm-map-insight-label">' . esc_html($label) . '</small></div></div>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div id="ilsm-insight-metrics" class="ilsm-insight-metrics"><div><i class="fa fa-arrow-down"></i><span>' . esc_html__( 'Incoming', 'dma-internlink-mapper' ) . '</span><b>' . absint($best['incoming_count']??0) . '</b></div><div><i class="fa fa-arrow-up"></i><span>' . esc_html__( 'Outgoing', 'dma-internlink-mapper' ) . '</span><b>' . absint($best['outgoing_count']??0) . '</b></div><div><i class="fa fa-font"></i><span>' . esc_html__( 'Weak anchors', 'dma-internlink-mapper' ) . '</span><b>' . absint($best['weak_anchor_count']??0) . '</b></div></div><div id="ilsm-map-recommendations" class="ilsm-recommendations"><h3>' . esc_html__( 'Recommendations', 'dma-internlink-mapper' ) . '</h3>' . $this->recommendations($best) . '</div></section></aside></div>';
+        echo '<div id="ilsm-insight-metrics" class="ilsm-insight-metrics"><div><i class="fa fa-arrow-down"></i><span>' . esc_html__( 'Incoming', 'dma-internlink-mapper' ) . '</span><b>' . absint($best['incoming_count']??0) . '</b></div><div><i class="fa fa-arrow-up"></i><span>' . esc_html__( 'Outgoing', 'dma-internlink-mapper' ) . '</span><b>' . absint($best['outgoing_count']??0) . '</b></div><div><i class="fa fa-font"></i><span>' . esc_html__( 'Weak anchors', 'dma-internlink-mapper' ) . '</span><b>' . absint($best['weak_anchor_count']??0) . '</b></div></div><div id="ilsm-map-recommendations" class="ilsm-recommendations"><h3>' . esc_html__( 'Recommendations', 'dma-internlink-mapper' ) . '</h3>' . wp_kses( $this->recommendations( $best ), $this->admin_helper_allowed_html() ) . '</div></section></aside></div>';
         $action_post_id = absint( $best['post_id'] ?? 0 );
         $action_title   = $action_post_id ? get_the_title( $action_post_id ) : '';
         $action_url     = $action_post_id && current_user_can( 'read_post', $action_post_id ) ? get_permalink( $action_post_id ) : '';
@@ -380,8 +405,7 @@ class ILSM_Admin {
         echo '<section class="ilsm-panel ilsm-architecture-controls ' . ( 'site' === $mode ? 'is-site-architecture' : 'is-page-architecture' ) . '">';
         if ( 'page' === $mode ) {
             echo '<div class="ilsm-architecture-control"><strong>' . esc_html__( 'Architecture view (depth / tiers)', 'dma-internlink-mapper' ) . '</strong><div class="ilsm-segmented" role="group" aria-label="' . esc_attr__( 'Architecture depth', 'dma-internlink-mapper' ) . '"><button type="button" data-depth="1" aria-pressed="false">' . esc_html__( '1 Tier', 'dma-internlink-mapper' ) . '</button><button type="button" data-depth="2" aria-pressed="false">' . esc_html__( '2 Tiers', 'dma-internlink-mapper' ) . '</button><button type="button" data-depth="3" aria-pressed="false">' . esc_html__( '3 Tiers', 'dma-internlink-mapper' ) . '</button><button type="button" class="is-active" data-depth="0" aria-pressed="true">' . esc_html__( 'All Levels', 'dma-internlink-mapper' ) . '</button></div></div>';
-            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-            echo '<div class="ilsm-architecture-control"><label for="ilsm-page-root"><strong>' . esc_html__( 'Start from', 'dma-internlink-mapper' ) . '</strong></label><select id="ilsm-page-root" class="ilsm-architecture-root">' . $this->page_options( $selected_post ) . '</select></div>';
+            echo '<div class="ilsm-architecture-control"><label for="ilsm-page-root"><strong>' . esc_html__( 'Start from', 'dma-internlink-mapper' ) . '</strong></label><select id="ilsm-page-root" class="ilsm-architecture-root">' . wp_kses( $this->page_options( $selected_post ), $this->admin_helper_allowed_html() ) . '</select></div>';
         } else {
             echo '<div class="ilsm-architecture-control ilsm-site-root-summary"><strong>' . esc_html__( 'Site root', 'dma-internlink-mapper' ) . '</strong><span><i class="fa fa-home" aria-hidden="true"></i> ' . esc_html__( 'Homepage — complete site architecture', 'dma-internlink-mapper' ) . '</span></div>';
         }
@@ -412,7 +436,7 @@ class ILSM_Admin {
     }
 
     public function link_report() {
-        $this->header( 'Link Report', 'Review the latest completed scan and export the data safely.' );
+        $this->header( __( 'Link Report', 'dma-internlink-mapper' ), __( 'Review the latest completed scan and export the data safely.', 'dma-internlink-mapper' ) );
         if ( ! ILSM_Database::latest_completed_scan_id() ) {
             $this->render_first_scan_state(
                 array(
@@ -462,11 +486,12 @@ class ILSM_Admin {
             elseif ( 'external' === $link_scope ) { $where .= " AND destination_type='external'"; }
             if ( '' !== $search ) { $like='%' . $wpdb->esc_like( $search ) . '%'; $where .= ' AND (source_title LIKE %s OR anchor_text LIKE %s OR target_title LIKE %s OR target_url LIKE %s)'; array_push($args,$like,$like,$like,$like); }
             $table = ILSM_Database::table( 'links' );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated. The placeholder list is completed by the validated argument array.
-            $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table}{$where}", $args ) );
-            $query_args = array_merge( $args, array( $per_page, ( $paged - 1 ) * $per_page ) );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated. The dynamic placeholder list matches the validated argument array.
-            $rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table}{$where} ORDER BY id DESC LIMIT %d OFFSET %d", $query_args ) );
+            $count_args = array_merge( array( $table ), $args );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Filter clauses are assembled only from fixed branches; table and values are passed to prepare().
+            $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i{$where}", $count_args ) );
+            $query_args = array_merge( array( $table ), $args, array( $per_page, ( $paged - 1 ) * $per_page ) );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Filter clauses are assembled only from fixed branches; table and values are passed to prepare().
+            $rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i{$where} ORDER BY id DESC LIMIT %d OFFSET %d", $query_args ) );
         }
 
         // Load the latest completed rendered SEO snapshot for all source pages on this
@@ -478,9 +503,9 @@ class ILSM_Admin {
             if ( $source_ids ) {
                 $pages_table = ILSM_Database::table( 'pages' );
                 $placeholders = implode( ',', array_fill( 0, count( $source_ids ), '%d' ) );
-                $seo_args = array_merge( array( absint( $scan ) ), $source_ids );
-                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Table name is generated by the strict internal allowlist. Placeholder count is generated from validated integer post IDs. Mutable scan data must be read fresh.
-                $seo_rows = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,seo_score,seo_verified FROM {$pages_table} WHERE scan_id=%d AND post_id IN ({$placeholders})", $seo_args ) );
+                $seo_args = array_merge( array( $pages_table, absint( $scan ) ), $source_ids );
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Post-ID placeholders are generated from validated IDs; table and all values are passed to prepare().
+                $seo_rows = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,seo_score,seo_verified FROM %i WHERE scan_id=%d AND post_id IN ({$placeholders})", $seo_args ) );
                 foreach ( (array) $seo_rows as $seo_row ) {
                     $source_seo[ absint( $seo_row->post_id ) ] = array(
                         'score'    => min( 100, absint( $seo_row->seo_score ) ),
@@ -491,8 +516,7 @@ class ILSM_Admin {
         }
 
         echo '<form method="get" class="ilsm-report-filters"><input type="hidden" name="page" value="ilsm-link-report"><label><span>' . esc_html__( 'Search', 'dma-internlink-mapper' ) . '</span><input type="search" name="s" value="' . esc_attr( $search ) . '" placeholder="' . esc_attr__( 'Source, anchor or target', 'dma-internlink-mapper' ) . '"></label><label><span>' . esc_html__( 'Status', 'dma-internlink-mapper' ) . '</span><select name="issue"><option value="">' . esc_html__( 'All statuses', 'dma-internlink-mapper' ) . '</option><option value="healthy" ' . selected( $issue, 'healthy', false ) . '>' . esc_html__( 'Healthy', 'dma-internlink-mapper' ) . '</option><option value="broken" ' . selected( $issue, 'broken', false ) . '>' . esc_html__( 'Broken', 'dma-internlink-mapper' ) . '</option><option value="redirect" ' . selected( $issue, 'redirect', false ) . '>' . esc_html__( 'Redirect', 'dma-internlink-mapper' ) . '</option><option value="weak_anchor" ' . selected( $issue, 'weak_anchor', false ) . '>' . esc_html__( 'Weak anchor', 'dma-internlink-mapper' ) . '</option><option value="empty_anchor" ' . selected( $issue, 'empty_anchor', false ) . '>' . esc_html__( 'Empty anchor', 'dma-internlink-mapper' ) . '</option></select></label><label><span>' . esc_html__( 'Link type', 'dma-internlink-mapper' ) . '</span><select name="link_scope"><option value="">' . esc_html__( 'All links', 'dma-internlink-mapper' ) . '</option><option value="internal" ' . selected( $link_scope, 'internal', false ) . '>' . esc_html__( 'Internal', 'dma-internlink-mapper' ) . '</option><option value="external" ' . selected( $link_scope, 'external', false ) . '>' . esc_html__( 'External', 'dma-internlink-mapper' ) . '</option></select></label><label><span>' . esc_html__( 'Follow', 'dma-internlink-mapper' ) . '</span><select name="follow"><option value="">' . esc_html__( 'All', 'dma-internlink-mapper' ) . '</option><option value="follow" ' . selected( $follow, 'follow', false ) . '>' . esc_html__( 'Follow', 'dma-internlink-mapper' ) . '</option><option value="nofollow" ' . selected( $follow, 'nofollow', false ) . '>' . esc_html__( 'Nofollow', 'dma-internlink-mapper' ) . '</option></select></label><label><span>' . esc_html__( 'Location', 'dma-internlink-mapper' ) . '</span><input type="text" name="location" value="' . esc_attr( $location ) . '" placeholder="' . esc_attr__( 'content', 'dma-internlink-mapper' ) . '"></label><button class="ilsm-btn ilsm-btn-primary"><i class="fa fa-filter"></i> ' . esc_html__( 'Apply Filters', 'dma-internlink-mapper' ) . '</button><a class="ilsm-btn" href="' . esc_url( admin_url( 'admin.php?page=ilsm-link-report' ) ) . '">' . esc_html__( 'Reset', 'dma-internlink-mapper' ) . '</a></form>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div class="ilsm-list-toolbar"><div class="ilsm-result-count"><strong>' . number_format_i18n( $total ) . '</strong> ' . esc_html__( 'links', 'dma-internlink-mapper' ) . '</div><input type="search" class="ilsm-table-search" placeholder="' . esc_attr__( 'Filter this page…', 'dma-internlink-mapper' ) . '"><div class="ilsm-export-actions"><a class="ilsm-btn" href="' . esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=ilsm_export_csv' ), 'ilsm_export' ) ) . '"><i class="fa fa-file-text-o"></i> ' . esc_html__( 'Export CSV', 'dma-internlink-mapper' ) . '</a><a class="ilsm-btn ilsm-btn-pdf" href="' . esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=ilsm_export_pdf' ), 'ilsm_export_pdf' ) ) . '"><i class="fa fa-file-pdf-o"></i> ' . esc_html__( 'Export PDF Audit', 'dma-internlink-mapper' ) . '</a></div></div>';
+        echo '<div class="ilsm-list-toolbar"><div class="ilsm-result-count"><strong>' . esc_html( number_format_i18n( $total ) ) . '</strong> ' . esc_html__( 'links', 'dma-internlink-mapper' ) . '</div><input type="search" class="ilsm-table-search" placeholder="' . esc_attr__( 'Filter this page…', 'dma-internlink-mapper' ) . '"><div class="ilsm-export-actions"><a class="ilsm-btn" href="' . esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=ilsm_export_csv' ), 'ilsm_export' ) ) . '"><i class="fa fa-file-text-o"></i> ' . esc_html__( 'Export CSV', 'dma-internlink-mapper' ) . '</a><a class="ilsm-btn ilsm-btn-pdf" href="' . esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=ilsm_export_pdf' ), 'ilsm_export_pdf' ) ) . '"><i class="fa fa-file-pdf-o"></i> ' . esc_html__( 'Export PDF Audit', 'dma-internlink-mapper' ) . '</a></div></div>';
         echo '<section class="ilsm-panel ilsm-table-panel ilsm-orphan-table-panel"><div class="ilsm-table-scroll ilsm-orphan-table-scroll"><table class="ilsm-table"><thead><tr><th>' . esc_html__( 'Source', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Source Page SEO', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Anchor text', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Target', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Type', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Location', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Follow', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Status', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';
         foreach ( $rows as $r ) {
             $source_post_id = absint( $r->source_post_id );
@@ -510,12 +534,10 @@ class ILSM_Admin {
             } else {
                 $seo_markup = '<span class="ilsm-muted">' . esc_html__( 'N/A', 'dma-internlink-mapper' ) . '</span>';
             }
-            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- SEO button markup is composed from escaped plugin-owned values; status_badge returns escaped plugin-owned markup.
-            echo '<tr><td><a href="' . esc_url( get_edit_post_link( $source_post_id ) ?: '#' ) . '">' . esc_html( $this->display_text( $r->source_title ) ) . '</a></td><td>' . $seo_markup . '</td><td>' . esc_html( $this->display_text( $r->anchor_text ?: '—' ) ) . '</td><td>' . esc_html( $this->display_text( $r->target_title ?: $r->target_url ) ) . '</td><td><span class="ilsm-badge ' . ( 'external' === (string) $r->destination_type ? 'is-warning' : 'is-success' ) . '">' . esc_html( 'external' === (string) $r->destination_type ? __( 'External', 'dma-internlink-mapper' ) : __( 'Internal', 'dma-internlink-mapper' ) ) . '</span></td><td><span class="ilsm-badge is-neutral">' . esc_html( $this->display_text( $r->link_location ) ) . '</span></td><td>' . esc_html( $this->display_text( $r->follow_status ) ) . '</td><td>' . $this->status_badge( $r->issue_type ) . '</td></tr>';
+            echo '<tr><td><a href="' . esc_url( get_edit_post_link( $source_post_id ) ?: '#' ) . '">' . esc_html( $this->display_text( $r->source_title ) ) . '</a></td><td>' . wp_kses( $seo_markup, $this->admin_helper_allowed_html() ) . '</td><td>' . esc_html( $this->display_text( $r->anchor_text ?: '—' ) ) . '</td><td>' . esc_html( $this->display_text( $r->target_title ?: $r->target_url ) ) . '</td><td><span class="ilsm-badge ' . ( 'external' === (string) $r->destination_type ? 'is-warning' : 'is-success' ) . '">' . esc_html( 'external' === (string) $r->destination_type ? __( 'External', 'dma-internlink-mapper' ) : __( 'Internal', 'dma-internlink-mapper' ) ) . '</span></td><td><span class="ilsm-badge is-neutral">' . esc_html( $this->display_text( $r->link_location ) ) . '</span></td><td>' . esc_html( $this->display_text( $r->follow_status ) ) . '</td><td>' . wp_kses( $this->status_badge( $r->issue_type ), $this->admin_helper_allowed_html() ) . '</td></tr>';
         }
         if ( ! $rows ) { echo '<tr><td colspan="8" class="ilsm-empty-cell">' . esc_html__( 'No completed scan data yet.', 'dma-internlink-mapper' ) . '</td></tr>'; }
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '</tbody></table></div>' . $this->pagination( $paged, $total, $per_page ) . '</section>';
+        echo '</tbody></table></div>' . wp_kses( $this->pagination( $paged, $total, $per_page ), $this->admin_helper_allowed_html() ) . '</section>';
         // Every report row with a WordPress source renders an SEO trigger, so the
         // matching dialog must always be present on this screen. Previously this
         // was guarded by an undefined orphan-report variable, leaving apparently
@@ -524,8 +546,8 @@ class ILSM_Admin {
         $this->footer();
     }
 
-    public function seo_issues() { $this->issues_page( 'SEO Issues', array() ); }
-    public function anchor_analysis() { $this->issues_page( 'Anchor Analysis', array( 'weak_anchor', 'empty_anchor' ) ); }
+    public function seo_issues() { $this->issues_page( __( 'SEO Issues', 'dma-internlink-mapper' ), array() ); }
+    public function anchor_analysis() { $this->issues_page( __( 'Anchor Analysis', 'dma-internlink-mapper' ), array( 'weak_anchor', 'empty_anchor' ) ); }
 
     public function on_page_seo() {
         $this->header( __( 'On-Page SEO', 'dma-internlink-mapper' ), __( 'Audit rendered page signals for Google Search, focus-keyphrase relevance, and crawler access.', 'dma-internlink-mapper' ) );
@@ -576,8 +598,8 @@ class ILSM_Admin {
         $metrics = array( 'incoming' => 0, 'outgoing' => 0, 'broken' => 0, 'weak' => 0 );
         if ( $scan ) {
             $table = ILSM_Database::table( 'pages' );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name is generated by the strict internal allowlist; mutable scan data must be read fresh.
-            $row = $wpdb->get_row( $wpdb->prepare( "SELECT incoming_count,outgoing_count,broken_count,weak_anchor_count FROM {$table} WHERE scan_id=%d AND post_id=%d LIMIT 1", absint( $scan ), $post_id ), ARRAY_A );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Mutable scan data must be read fresh.
+            $row = $wpdb->get_row( $wpdb->prepare( "SELECT incoming_count,outgoing_count,broken_count,weak_anchor_count FROM %i WHERE scan_id=%d AND post_id=%d LIMIT 1", $table, absint( $scan ), $post_id ), ARRAY_A );
             if ( is_array( $row ) ) {
                 $metrics = array(
                     'incoming' => absint( $row['incoming_count'] ?? 0 ),
@@ -664,7 +686,7 @@ class ILSM_Admin {
      * Persist an Ignore/Restore decision for the Orphan Pages report.
      */
     public function orphan_ignore() {
-        if ( ! current_user_can( 'ilsm_view_reports' ) ) {
+        if ( ! current_user_can( 'ilsm_manage_settings' ) ) {
             wp_die( esc_html__( 'Permission denied.', 'dma-internlink-mapper' ) );
         }
 
@@ -705,7 +727,7 @@ class ILSM_Admin {
     }
 
     public function orphans() {
-        $this->header( 'Orphan Pages', 'Indexed pages with no discovered incoming internal links.' );
+        $this->header( __( 'Orphan Pages', 'dma-internlink-mapper' ), __( 'Indexed pages with no discovered incoming internal links.', 'dma-internlink-mapper' ) );
         if ( ! ILSM_Database::latest_completed_scan_id() ) {
             $this->render_first_scan_state(
                 array(
@@ -728,8 +750,8 @@ class ILSM_Admin {
         $unverified_render_count = 0;
         if ( $latest_scan_id ) {
             $pages_table_for_notice = ILSM_Database::table( 'pages' );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned table from strict allowlist; fresh crawl verification state.
-            $unverified_render_count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$pages_table_for_notice} WHERE scan_id=%d AND render_verified=0", $latest_scan_id ) );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Fresh crawl verification state.
+            $unverified_render_count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND render_verified=0", $pages_table_for_notice, $latest_scan_id ) );
         }
         if ( $unverified_render_count > 0 ) {
             /* translators: %d: number of pages that could not be verified from public rendered HTML. */
@@ -758,8 +780,7 @@ class ILSM_Admin {
         try {
             if ( $scan ) {
                 $table = ILSM_Database::table( 'pages' );
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) !== $table ) {
+                if ( ! ILSM_Database::table_exists( $table ) ) {
                     throw new RuntimeException( 'The indexed-pages table is missing. Run Health Audit and repair the database.' );
                 }
                 $where = ' WHERE scan_id=%d AND is_orphan=1';
@@ -779,11 +800,12 @@ class ILSM_Admin {
                 }
                 if ( '' !== $post_type ) { $where .= ' AND post_type=%s'; $args[] = $post_type; }
                 if ( '' !== $search ) { $like = '%' . $wpdb->esc_like( $search ) . '%'; $where .= ' AND (title LIKE %s OR url LIKE %s)'; $args[] = $like; $args[] = $like; }
-                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated. The placeholder list is completed by the validated argument array.
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table}{$where}", $args ) );
-                $query_args = array_merge( $args, array( $per_page, ( $paged - 1 ) * $per_page ) );
-                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated. The dynamic placeholder list matches the validated argument array.
-                $result = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,title,url,post_type,incoming_count,outgoing_count,seo_score,seo_verified FROM {$table}{$where} ORDER BY title ASC LIMIT %d OFFSET %d", $query_args ) );
+                $count_args = array_merge( array( $table ), $args );
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Filter clauses are assembled only from fixed branches; table and values are passed to prepare().
+                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i{$where}", $count_args ) );
+                $query_args = array_merge( array( $table ), $args, array( $per_page, ( $paged - 1 ) * $per_page ) );
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Filter clauses are assembled only from fixed branches; table and values are passed to prepare().
+                $result = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,title,url,post_type,incoming_count,outgoing_count,seo_score,seo_verified FROM %i{$where} ORDER BY title ASC LIMIT %d OFFSET %d", $query_args ) );
                 if ( ! empty( $wpdb->last_error ) ) {
                     throw new RuntimeException( $this->database_error_message( 'The orphan-page query could not be completed.' ) );
                 }
@@ -806,9 +828,9 @@ class ILSM_Admin {
         if ( $scan && ! empty( $ignored_ids ) ) {
             $table = ILSM_Database::table( 'pages' );
             $placeholders = implode( ',', array_fill( 0, count( $ignored_ids ), '%d' ) );
-            $ignored_args = array_merge( array( $scan ), $ignored_ids );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Plugin-owned allowlisted table and a placeholder list generated only from absint post IDs.
-            $ignored_count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE scan_id=%d AND is_orphan=1 AND post_id IN ({$placeholders})", $ignored_args ) );
+            $ignored_args = array_merge( array( $table, $scan ), $ignored_ids );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Post-ID placeholders are generated from validated IDs; table and values are passed to prepare().
+            $ignored_count = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND is_orphan=1 AND post_id IN ({$placeholders})", $ignored_args ) );
         }
 
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only notice parameter set only after a nonce-protected admin action.
@@ -834,8 +856,7 @@ class ILSM_Admin {
         }
         $reset_url = 'ignored' === $orphan_view ? add_query_arg( 'orphan_view', 'ignored', admin_url( 'admin.php?page=ilsm-orphans' ) ) : admin_url( 'admin.php?page=ilsm-orphans' );
         echo '</select></label><button class="ilsm-btn ilsm-btn-primary"><i class="fa fa-filter"></i> ' . esc_html__( 'Apply Filters', 'dma-internlink-mapper' ) . '</button><a class="ilsm-btn" href="' . esc_url( $reset_url ) . '">' . esc_html__( 'Reset', 'dma-internlink-mapper' ) . '</a></form>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div class="ilsm-list-toolbar"><div class="ilsm-result-count"><strong>' . number_format_i18n( $total ) . '</strong> ' . esc_html( 'ignored' === $orphan_view ? __( 'ignored orphan pages', 'dma-internlink-mapper' ) : __( 'orphan pages', 'dma-internlink-mapper' ) ) . '</div><input type="search" class="ilsm-table-search" placeholder="' . esc_attr__( 'Filter this page…', 'dma-internlink-mapper' ) . '"></div>';
+        echo '<div class="ilsm-list-toolbar"><div class="ilsm-result-count"><strong>' . esc_html( number_format_i18n( $total ) ) . '</strong> ' . esc_html( 'ignored' === $orphan_view ? __( 'ignored orphan pages', 'dma-internlink-mapper' ) : __( 'orphan pages', 'dma-internlink-mapper' ) ) . '</div><input type="search" class="ilsm-table-search" placeholder="' . esc_attr__( 'Filter this page…', 'dma-internlink-mapper' ) . '"></div>';
         $show_seo_score = 'ignored' !== $orphan_view;
         echo '<section class="ilsm-panel ilsm-table-panel ilsm-orphan-table-panel"><div class="ilsm-table-scroll ilsm-orphan-table-scroll"><table class="ilsm-table"><thead><tr><th>' . esc_html__( 'Page', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Post type', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Incoming', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Outgoing', 'dma-internlink-mapper' ) . '</th>' . ( $show_seo_score ? '<th>' . esc_html__( 'SEO score', 'dma-internlink-mapper' ) . '</th>' : '' ) . '<th>' . esc_html__( 'Actions', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';
         $rendered = 0;
@@ -856,7 +877,7 @@ class ILSM_Admin {
                 /* translators: %s: page title. */
                 $seo_aria_label = sprintf( __( 'Analyze rendered SEO for %s', 'dma-internlink-mapper' ), $title );
                 $orphan_action_url = '';
-                if ( $post_id ) {
+                if ( $post_id && current_user_can( 'ilsm_manage_settings' ) ) {
                     $orphan_mode = 'ignored' === $orphan_view ? 'restore' : 'ignore';
                     $orphan_action_url = wp_nonce_url(
                         add_query_arg(
@@ -887,8 +908,7 @@ class ILSM_Admin {
                     : __( 'No orphan pages were found in the latest completed scan.', 'dma-internlink-mapper' ) );
             echo '<tr><td colspan="' . esc_attr( $show_seo_score ? 6 : 5 ) . '" class="ilsm-empty-cell">' . esc_html( $empty_text ) . '</td></tr>';
         }
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '</tbody></table></div>' . $this->pagination( $paged, $total, $per_page ) . '</section>';
+        echo '</tbody></table></div>' . wp_kses( $this->pagination( $paged, $total, $per_page ), $this->admin_helper_allowed_html() ) . '</section>';
         if ( $show_seo_score ) {
             echo '<div id="ilsm-seo-analysis-modal" class="ilsm-seo-modal" hidden aria-hidden="true"><div class="ilsm-seo-modal-backdrop" data-ilsm-seo-close></div><section class="ilsm-seo-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="ilsm-seo-modal-title"><button type="button" class="ilsm-seo-modal-close" data-ilsm-seo-close aria-label="' . esc_attr__( 'Close SEO analysis', 'dma-internlink-mapper' ) . '"><i class="fa fa-times" aria-hidden="true"></i></button><div id="ilsm-seo-modal-content"><div class="ilsm-seo-loading"><i class="fa fa-circle-o-notch fa-spin" aria-hidden="true"></i> ' . esc_html__( 'Analyzing rendered public HTML…', 'dma-internlink-mapper' ) . '</div></div></section></div>';
         }
@@ -907,26 +927,28 @@ class ILSM_Admin {
     }
 
     public function health_audit() {
-        $this->header( 'Health Audit', 'Check database integrity, scan data, permissions, and hosting limits without crashing the admin.' );
+        $this->header( __( 'Health Audit', 'dma-internlink-mapper' ), __( 'Check database integrity, scan data, permissions, and hosting limits without crashing the admin.', 'dma-internlink-mapper' ) );
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin filtering; no state is changed.
         if ( ! empty( $_GET['repaired'] ) ) { echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Database schema repair completed. Run a fresh scan if report counts still use older data.', 'dma-internlink-mapper' ) . '</p></div>'; }
         global $wpdb;
         $checks = array();
-        $tables = array( 'scans', 'pages', 'links', 'issues', 'keywords', 'phrases', 'feedback', 'opportunities', 'external_actions' );
+        $tables = array( 'scans', 'pages', 'links', 'issues', 'keywords', 'phrases', 'feedback', 'opportunities', 'insertions', 'external_actions', 'search_console_urls', 'redirects', 'locks' );
         foreach ( $tables as $name ) {
             $table = ILSM_Database::table( $name );
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-            $exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table;
-            $checks[] = array( $exists, 'Database table: ' . $table, $exists ? 'Available' : 'Missing. Deactivate and reactivate the plugin to repair tables.' );
+            $exists = ILSM_Database::table_exists( $table );
+            /* translators: %s: plugin database table name. */
+            $checks[] = array( $exists, sprintf( __( 'Database table: %s', 'dma-internlink-mapper' ), $table ), $exists ? __( 'Available', 'dma-internlink-mapper' ) : __( 'Missing. Deactivate and reactivate the plugin to repair tables.', 'dma-internlink-mapper' ) );
         }
         $scan = ILSM_Database::latest_completed_scan_id();
-        $checks[] = array( (bool) $scan, 'Completed scan', $scan ? 'Latest completed scan #' . absint( $scan ) : 'No completed scan is available.' );
-        $checks[] = array( current_user_can( 'ilsm_view_reports' ), 'Report capability', current_user_can( 'ilsm_view_reports' ) ? 'Current user can view reports.' : 'Capability is missing.' );
-        $checks[] = array( function_exists( 'mb_strtolower' ), 'Multibyte text support', function_exists( 'mb_strtolower' ) ? 'mbstring is available.' : 'mbstring is unavailable; basic UTF-8 fallbacks will be used.' );
+        /* translators: %d: completed scan identifier. */
+        $scan_label = $scan ? sprintf( __( 'Latest completed scan #%d', 'dma-internlink-mapper' ), absint( $scan ) ) : __( 'No completed scan is available.', 'dma-internlink-mapper' );
+        $checks[] = array( (bool) $scan, __( 'Completed scan', 'dma-internlink-mapper' ), $scan_label );
+        $checks[] = array( current_user_can( 'ilsm_view_reports' ), __( 'Report capability', 'dma-internlink-mapper' ), current_user_can( 'ilsm_view_reports' ) ? __( 'Current user can view reports.', 'dma-internlink-mapper' ) : __( 'Capability is missing.', 'dma-internlink-mapper' ) );
+        $checks[] = array( function_exists( 'mb_strtolower' ), __( 'Multibyte text support', 'dma-internlink-mapper' ), function_exists( 'mb_strtolower' ) ? __( 'mbstring is available.', 'dma-internlink-mapper' ) : __( 'mbstring is unavailable; basic UTF-8 fallbacks will be used.', 'dma-internlink-mapper' ) );
         $memory = wp_convert_hr_to_bytes( ini_get( 'memory_limit' ) );
-        $checks[] = array( -1 === $memory || $memory >= 134217728, 'PHP memory limit', -1 === $memory ? 'Unlimited' : size_format( $memory ) );
-        $checks[] = array( version_compare( PHP_VERSION, '7.4', '>=' ), 'PHP version', PHP_VERSION );
-        $checks[] = array( empty( $wpdb->last_error ), 'Last database error', empty( $wpdb->last_error ) ? 'None detected during this audit.' : $wpdb->last_error );
+        $checks[] = array( -1 === $memory || $memory >= 134217728, __( 'PHP memory limit', 'dma-internlink-mapper' ), -1 === $memory ? __( 'Unlimited', 'dma-internlink-mapper' ) : size_format( $memory ) );
+        $checks[] = array( version_compare( PHP_VERSION, '7.4', '>=' ), __( 'PHP version', 'dma-internlink-mapper' ), PHP_VERSION );
+        $checks[] = array( empty( $wpdb->last_error ), __( 'Last database error', 'dma-internlink-mapper' ), empty( $wpdb->last_error ) ? __( 'None detected during this audit.', 'dma-internlink-mapper' ) : $wpdb->last_error );
 
         echo '<div class="ilsm-health-grid">';
         foreach ( $checks as $check ) {
@@ -944,7 +966,7 @@ class ILSM_Admin {
     }
 
     private function issues_page( $title, $types ) {
-        $is_anchor = 'Anchor Analysis' === $title;
+        $is_anchor = __( 'Anchor Analysis', 'dma-internlink-mapper' ) === $title;
         $subtitle  = $is_anchor
             ? __( 'Review weak, empty and generic anchor text from the latest completed scan.', 'dma-internlink-mapper' )
             : __( 'Review supported technical SEO issues from the latest completed scan.', 'dma-internlink-mapper' );
@@ -1028,9 +1050,9 @@ class ILSM_Admin {
                     $args[] = $like;
                 }
 
-                $count_sql = "SELECT COUNT(*) FROM {$table} i LEFT JOIN {$wpdb->posts} p ON p.ID=i.post_id {$where}";
-                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-                $total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $args ) );
+                $count_args = array_merge( array( $table, $wpdb->posts ), $args );
+                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Filter clauses are assembled only from fixed branches; identifiers and values are passed to prepare().
+                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i i LEFT JOIN %i p ON p.ID=i.post_id {$where}", $count_args ) );
                 if ( ! empty( $wpdb->last_error ) ) {
                     throw new RuntimeException( $this->database_error_message( 'The issue count could not be loaded.' ) );
                 }
@@ -1042,15 +1064,20 @@ class ILSM_Admin {
                 }
 
                 $posts_table = $wpdb->posts;
-                $select_sql = "SELECT i.id,i.post_id,i.link_id,i.issue_type,i.severity,i.message,i.created_at,COALESCE(p.post_title,'') AS post_title
-                    FROM {$table} i
-                    LEFT JOIN {$posts_table} p ON p.ID=i.post_id
-                    {$where}
-                    ORDER BY i.id DESC
-                    LIMIT %d OFFSET %d";
-                $query_args = array_merge( $args, array( $per_page, $offset ) );
-                // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-                $result = $wpdb->get_results( $wpdb->prepare( $select_sql, $query_args ) );
+                $query_args = array_merge( array( $table, $posts_table ), $args, array( $per_page, $offset ) );
+                // phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- The WHERE fragment is assembled only from fixed plugin-owned clauses and its values are matched to generated placeholders before wpdb::prepare().
+                $result = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT i.id,i.post_id,i.link_id,i.issue_type,i.severity,i.message,i.created_at,COALESCE(p.post_title,'') AS post_title
+                        FROM %i i
+                        LEFT JOIN %i p ON p.ID=i.post_id
+                        {$where}
+                        ORDER BY i.id DESC
+                        LIMIT %d OFFSET %d",
+                        $query_args
+                    )
+                );
+                // phpcs:enable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
                 if ( ! empty( $wpdb->last_error ) ) {
                     throw new RuntimeException( $this->database_error_message( 'The issue rows could not be loaded.' ) );
                 }
@@ -1071,8 +1098,8 @@ class ILSM_Admin {
 
         $available_issue_types = $types ? array_values( array_unique( array_map( 'sanitize_key', $types ) ) ) : array();
         if ( ! $types && $scan ) {
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-            $available_issue_types = array_values( array_filter( array_map( 'sanitize_key', (array) $wpdb->get_col( $wpdb->prepare( 'SELECT DISTINCT issue_type FROM ' . ILSM_Database::table( 'issues' ) . ' WHERE scan_id=%d ORDER BY issue_type ASC', $scan ) ) ) ) );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current issue types must be read fresh.
+            $available_issue_types = array_values( array_filter( array_map( 'sanitize_key', (array) $wpdb->get_col( $wpdb->prepare( 'SELECT DISTINCT issue_type FROM %i WHERE scan_id=%d ORDER BY issue_type ASC', ILSM_Database::table( 'issues' ), $scan ) ) ) ) );
         }
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin filtering; no state is changed.
         $page_slug = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : 'ilsm-seo-issues';
@@ -1081,8 +1108,7 @@ class ILSM_Admin {
         echo '</select></label><label><span>' . esc_html__( 'Issue type', 'dma-internlink-mapper' ) . '</span><select name="issue_type"><option value="">' . esc_html__( 'All issue types', 'dma-internlink-mapper' ) . '</option>';
         foreach ( $available_issue_types as $available_type ) { echo '<option value="' . esc_attr( $available_type ) . '" ' . selected( $issue_type, $available_type, false ) . '>' . esc_html( ucwords( str_replace( '_', ' ', $available_type ) ) ) . '</option>'; }
         echo '</select></label><button class="ilsm-btn ilsm-btn-primary"><i class="fa fa-filter"></i> ' . esc_html__( 'Apply Filters', 'dma-internlink-mapper' ) . '</button><a class="ilsm-btn" href="' . esc_url( admin_url( 'admin.php?page=' . $page_slug ) ) . '">' . esc_html__( 'Reset', 'dma-internlink-mapper' ) . '</a></form>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<div class="ilsm-list-toolbar"><div class="ilsm-result-count"><strong>' . number_format_i18n( $total ) . '</strong> ' . esc_html__( 'results', 'dma-internlink-mapper' ) . '</div><input type="search" class="ilsm-table-search" placeholder="' . esc_attr__( 'Filter this page…', 'dma-internlink-mapper' ) . '"></div>';
+        echo '<div class="ilsm-list-toolbar"><div class="ilsm-result-count"><strong>' . esc_html( number_format_i18n( $total ) ) . '</strong> ' . esc_html__( 'results', 'dma-internlink-mapper' ) . '</div><input type="search" class="ilsm-table-search" placeholder="' . esc_attr__( 'Filter this page…', 'dma-internlink-mapper' ) . '"></div>';
         echo '<section class="ilsm-panel ilsm-table-panel ilsm-orphan-table-panel"><div class="ilsm-table-scroll ilsm-orphan-table-scroll"><table class="ilsm-table"><thead><tr><th>' . esc_html__( 'Severity', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Issue', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Post', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Message', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Actions', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';
 
         $rendered = 0;
@@ -1122,10 +1148,12 @@ class ILSM_Admin {
             }
         }
         if ( 0 === $rendered ) {
-            echo '<tr><td colspan="5" class="ilsm-empty-cell">' . ( $total ? 'The report contains records, but none could be rendered safely. Open Health Audit and repair the schema.' : 'No issues found for this view.' ) . '</td></tr>';
+            $empty_message = $total
+                ? __( 'The report contains records, but none could be rendered safely. Open Health Audit and repair the schema.', 'dma-internlink-mapper' )
+                : __( 'No issues found for this view.', 'dma-internlink-mapper' );
+            echo '<tr><td colspan="5" class="ilsm-empty-cell">' . esc_html( $empty_message ) . '</td></tr>';
         }
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '</tbody></table></div>' . $this->pagination( $paged, $total, $per_page ) . '</section>';
+        echo '</tbody></table></div>' . wp_kses( $this->pagination( $paged, $total, $per_page ), $this->admin_helper_allowed_html() ) . '</section>';
         $this->footer();
     }
 
@@ -1148,7 +1176,7 @@ class ILSM_Admin {
     }
 
     public function history() {
-        $this->header( 'Scan History', 'Review previous scans, safely prune old snapshots, or reset all indexed plugin data.' );
+        $this->header( __( 'Scan History', 'dma-internlink-mapper' ), __( 'Review previous scans, safely prune old snapshots, or reset all indexed plugin data.', 'dma-internlink-mapper' ) );
 
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only admin filtering; no state is changed.
         if ( isset( $_GET['ilsm_notice'] ) ) {
@@ -1186,15 +1214,14 @@ class ILSM_Admin {
         echo '<button type="submit" class="ilsm-btn ilsm-btn-danger"><i class="fa fa-exclamation-triangle" aria-hidden="true"></i> Delete History and Indexed Data</button></form></div></section>';
         echo '</div>';
 
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        echo '<section class="ilsm-panel ilsm-table-panel">' . $this->history_table( 100 ) . '</section>';
+        echo '<section class="ilsm-panel ilsm-table-panel">' . wp_kses( $this->history_table( 100 ), $this->admin_helper_allowed_html() ) . '</section>';
         $this->footer();
     }
 
     private function history_table( $limit ) {
         global $wpdb;
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Database::table( 'scans' ) . ' ORDER BY id DESC LIMIT %d', $limit ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Scan history must be read fresh.
+        $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT %d', ILSM_Database::table( 'scans' ), $limit ) );
         $html = '<div class="ilsm-table-scroll"><table class="ilsm-table"><thead><tr><th>' . esc_html__( 'ID', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Status', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Items', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Links', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Issues', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Started', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';
         foreach ( $rows as $r ) {
             $html .= '<tr><td>#' . absint( $r->id ) . '</td><td><span class="ilsm-badge is-neutral">' . esc_html( ucfirst( $r->status ) ) . '</span></td><td>' . absint( $r->scanned_items ) . ' / ' . absint( $r->total_items ) . '</td><td>' . absint( $r->links_found ) . '</td><td>' . absint( $r->issues_found ) . '</td><td>' . esc_html( $r->started_at ) . '</td></tr>';
@@ -1213,8 +1240,7 @@ class ILSM_Admin {
         $scans = ILSM_Database::table( 'scans' );
         $protected = array_filter( array(
             ILSM_Database::latest_completed_scan_id(),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-            (int) $wpdb->get_var( "SELECT id FROM {$scans} WHERE status IN ('pending','running','paused') ORDER BY id DESC LIMIT 1" ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+            (int) $wpdb->get_var( $wpdb->prepare( "SELECT id FROM %i WHERE status IN ('pending','running','paused') ORDER BY id DESC LIMIT 1", $scans ) ), // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Active scan state must be read fresh.
         ) );
         $protected = array_values( array_unique( array_map( 'absint', $protected ) ) );
 
@@ -1224,12 +1250,9 @@ class ILSM_Admin {
             $where = 'id NOT IN (' . implode( ',', array_fill( 0, count( $protected ), '%d' ) ) . ')';
             $args  = $protected;
         }
-        $ids_sql = "SELECT id FROM {$scans} WHERE {$where}"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-        if ( $args ) {
-            $ids_sql = $wpdb->prepare( $ids_sql, $args ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        }
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-        $delete_ids = array_map( 'absint', (array) $wpdb->get_col( $ids_sql ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+        $ids_args = array_merge( array( $scans ), $args );
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- WHERE clause is either a fixed literal or an internally generated integer placeholder list; table and values are passed to prepare().
+        $delete_ids = array_map( 'absint', (array) $wpdb->get_col( $wpdb->prepare( "SELECT id FROM %i WHERE {$where}", $ids_args ) ) );
         if ( ! $delete_ids ) {
             $this->history_redirect( 'nothing_deleted' );
         }
@@ -1252,8 +1275,8 @@ class ILSM_Admin {
 
         global $wpdb;
         $scans = ILSM_Database::table( 'scans' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $active = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$scans} WHERE status IN ('pending','running','paused')" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Active scan state must be read fresh.
+        $active = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE status IN ('pending','running','paused')", $scans ) );
         if ( $active > 0 ) {
             $this->history_redirect( 'active_scan' );
         }
@@ -1265,8 +1288,8 @@ class ILSM_Admin {
         $ok = true;
         foreach ( $tables as $name ) {
             $table = ILSM_Database::table( $name );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-            if ( false === $wpdb->query( "DELETE FROM {$table}" ) ) { // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Transactional cleanup of plugin-owned data.
+            if ( false === $wpdb->query( $wpdb->prepare( "DELETE FROM %i", $table ) ) ) {
                 $ok = false;
                 break;
             }
@@ -1292,17 +1315,16 @@ class ILSM_Admin {
         $ok = true;
         foreach ( array( 'opportunities', 'phrases', 'keywords', 'issues', 'links', 'pages' ) as $name ) {
             $table = ILSM_Database::table( $name );
-            // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The placeholder list is completed by the validated argument array.
-            $sql = $wpdb->prepare( "DELETE FROM {$table} WHERE scan_id IN ({$placeholders})", $scan_ids ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-            if ( false === $wpdb->query( $sql ) ) { $ok = false; break; } // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+            $delete_args = array_merge( array( $table ), $scan_ids );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Scan-ID placeholders are generated from validated integers; table and values are passed to prepare().
+            if ( false === $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE scan_id IN ({$placeholders})", $delete_args ) ) ) { $ok = false; break; }
         }
         if ( $ok && $delete_scan_rows ) {
             $table = ILSM_Database::table( 'scans' );
-            // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The placeholder list is completed by the validated argument array.
-            $sql = $wpdb->prepare( "DELETE FROM {$table} WHERE id IN ({$placeholders})", $scan_ids ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-            if ( false === $wpdb->query( $sql ) ) { $ok = false; } // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+            $delete_args = array_merge( array( $table ), $scan_ids );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Scan-ID placeholders are generated from validated integers; table and values are passed to prepare().
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- ID placeholders are generated from validated integers; identifier and values are passed to prepare().
+            if ( false === $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE id IN ({$placeholders})", $delete_args ) ) ) { $ok = false; }
         }
         if ( $ok ) {
             $ok = ILSM_Database::commit();
@@ -1343,11 +1365,8 @@ class ILSM_Admin {
         echo '<div class="ilsm-settings-top-actions"><button type="button" class="ilsm-btn" id="ilsm-reset-settings"><i class="fa fa-refresh" aria-hidden="true"></i> ' . esc_html__( 'Reset to defaults', 'dma-internlink-mapper' ) . '</button><button class="ilsm-btn ilsm-btn-primary"><i class="fa fa-floppy-o" aria-hidden="true"></i> ' . esc_html__( 'Save settings', 'dma-internlink-mapper' ) . '</button></div>';
         echo '<div class="ilsm-settings-shell"><main class="ilsm-settings-main">';
         echo '<section class="ilsm-panel ilsm-settings-card ilsm-settings-performance"><div class="ilsm-settings-head"><span class="ilsm-settings-icon"><i class="fa fa-tachometer"></i></span><div><h2>' . esc_html__( 'Scan Performance', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Control scanner speed, accuracy, and server resource usage.', 'dma-internlink-mapper' ) . '</p></div><span class="ilsm-tip-chip"><i class="fa fa-lightbulb-o" aria-hidden="true"></i> ' . esc_html__( 'Tips', 'dma-internlink-mapper' ) . '</span></div><div class="ilsm-form-grid ilsm-form-grid-three">';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'batch_size', __( 'Batch size', 'dma-internlink-mapper' ), $s['batch_size'] ?? 15, 1, 100, __( 'Pages processed per AJAX request.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'batch_delay', __( 'Delay between batches (ms)', 'dma-internlink-mapper' ), $s['batch_delay'] ?? 350, 0, 10000, __( 'Milliseconds between requests.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'max_pages', __( 'Maximum pages', 'dma-internlink-mapper' ), $s['max_pages'] ?? 5000, 1, 50000, __( 'Hard limit per scan.', 'dma-internlink-mapper' ) );
         echo '</div><div class="ilsm-field ilsm-post-type-field"><span class="ilsm-field-title">Post Types to Include <i class="fa fa-info-circle" title="Only selected public post types are scanned."></i></span><div class="ilsm-check-grid">';
         foreach ( $types as $type ) {
@@ -1369,25 +1388,17 @@ class ILSM_Admin {
         foreach ( array( 25, 50, 100, 200 ) as $amount ) { echo '<option value="' . absint( $amount ) . '" ' . selected( (int) ( $s['report_per_page'] ?? 50 ), $amount, false ) . '>' . absint( $amount ) . '</option>'; }
         echo '</select><small>' . esc_html__( 'Server-side pagination keeps large reports responsive.', 'dma-internlink-mapper' ) . '</small></label></div></section></div>';
         echo '<section id="ilsm-broken-monitor" class="ilsm-panel ilsm-settings-card"><div class="ilsm-settings-head"><span class="ilsm-settings-icon"><i class="fa fa-chain-broken"></i></span><div><h2>' . esc_html__( 'Bounded Broken-Link Monitor', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Rechecks a very small queue hourly instead of crawling the whole site in one database-heavy job.', 'dma-internlink-mapper' ) . '</p></div></div><div class="ilsm-report-quality-grid"><label class="ilsm-quality-option"><input type="checkbox" name="broken_monitor_enabled" value="1" ' . checked( ! empty( $s['broken_monitor_enabled'] ), true, false ) . '><span><strong>' . esc_html__( 'Enable background monitoring', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Disabled by default. Uses a single lock, a primary-key cursor and hard request limits.', 'dma-internlink-mapper' ) . '</small></span></label><label class="ilsm-quality-option"><input type="checkbox" name="broken_monitor_external" value="1" ' . checked( ! empty( $s['broken_monitor_external'] ), true, false ) . '><span><strong>' . esc_html__( 'Include external destinations', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Makes outbound requests to third-party sites. Leave disabled for local-only checks.', 'dma-internlink-mapper' ) . '</small></span></label>';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup.
         $this->number_field( 'broken_monitor_batch_size', __( 'Destinations per hourly run', 'dma-internlink-mapper' ), $s['broken_monitor_batch_size'] ?? 5, 1, 10, __( 'Hard capped at 10 to protect shared hosting and the database.', 'dma-internlink-mapper' ) );
         echo '</div><p><a class="ilsm-btn" href="' . esc_url( admin_url( 'admin.php?page=ilsm-broken-links' ) ) . '">' . esc_html__( 'Open Broken Links', 'dma-internlink-mapper' ) . '</a></p></section>';
         echo '<section id="ilsm-safe-link-insertion" class="ilsm-panel ilsm-settings-card"><div class="ilsm-settings-head"><span class="ilsm-settings-icon"><i class="fa fa-link"></i></span><div><h2>' . esc_html__( 'Safe Link Insertion', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Choose Preview Mode for testing or Live Mode to write approved links into supported content.', 'dma-internlink-mapper' ) . '</p></div></div><div class="ilsm-form-grid ilsm-form-grid-three">';
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'insert_min_confidence', __( 'Minimum confidence', 'dma-internlink-mapper' ), $s['insert_min_confidence'] ?? 70, 60, 100, __( 'Default 70. Higher values produce fewer, stricter suggestions.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'insert_max_per_source', __( 'Maximum per source per run', 'dma-internlink-mapper' ), $s['insert_max_per_source'] ?? 2, 1, 10, __( 'Hard per-post limit.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'insert_max_per_run', __( 'Maximum site-wide per run', 'dma-internlink-mapper' ), $s['insert_max_per_run'] ?? 20, 1, 100, __( 'Hard batch limit.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'insert_min_word_distance', __( 'Minimum word distance', 'dma-internlink-mapper' ), $s['insert_min_word_distance'] ?? 120, 20, 1000, __( 'Minimum word distance between a new anchor and an existing contextual internal link.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'insert_min_source_words', __( 'Minimum source words', 'dma-internlink-mapper' ), $s['insert_min_source_words'] ?? 300, 50, 5000, __( 'Pages below this eligible body-word count are excluded as insertion sources.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
         $this->number_field( 'insert_density_per_1000', __( 'Maximum links per 1,000 words', 'dma-internlink-mapper' ), $s['insert_density_per_1000'] ?? 6, 1, 20, __( 'Contextual internal-link density ceiling.', 'dma-internlink-mapper' ) );
-        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- The helper returns escaped, plugin-owned admin markup or a safe numeric value.
-        $this->number_field( 'insert_batch_size', __( 'Processing batch size', 'dma-internlink-mapper' ), $s['insert_batch_size'] ?? 5, 1, 20, __( 'Small bounded AJAX batches.', 'dma-internlink-mapper' ) );
-        echo '</div><div class="ilsm-report-quality-grid"><label class="ilsm-quality-option"><input type="checkbox" name="insert_create_revision" value="1" ' . checked( ! empty( $s['insert_create_revision'] ), true, false ) . '><span><strong>' . esc_html__( 'Create a WordPress revision', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Recommended before every content modification.', 'dma-internlink-mapper' ) . '</small></span></label><label class="ilsm-quality-option"><input type="checkbox" name="insert_audit_log" value="1" ' . checked( ! empty( $s['insert_audit_log'] ), true, false ) . '><span><strong>' . esc_html__( 'Enable insertion audit log', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Records verified insertions, failures and undo actions.', 'dma-internlink-mapper' ) . '</small></span></label><label class="ilsm-quality-option"><input type="checkbox" name="insert_dry_run" value="1" ' . checked( ! empty( $s['insert_dry_run'] ), true, false ) . '><span><strong>' . esc_html__( 'Preview Mode', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Safely test every insertion without changing posts, pages, Gutenberg blocks, or Elementor data. Enabled by default.', 'dma-internlink-mapper' ) . '</small></span></label><label class="ilsm-quality-option"><input type="checkbox" name="insert_auto_enabled" value="1" ' . checked( ! empty( $s['insert_auto_enabled'] ), true, false ) . '><span><strong>' . esc_html__( 'Enable reviewed bulk processing', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Processes only opportunities you explicitly select. It never runs on page load or WordPress Heartbeat.', 'dma-internlink-mapper' ) . '</small></span></label></div></section>';
+        $this->number_field( 'insert_batch_size', __( 'Processing batch size', 'dma-internlink-mapper' ), $s['insert_batch_size'] ?? 5, 1, 20, __( 'Number of selected opportunities processed before the browser yields and continues the reviewed run. Each content change still uses its own verified request.', 'dma-internlink-mapper' ) );
+        echo '</div><div class="ilsm-report-quality-grid"><label class="ilsm-quality-option"><input type="checkbox" name="insert_create_revision" value="1" ' . checked( ! empty( $s['insert_create_revision'] ), true, false ) . '><span><strong>' . esc_html__( 'Create a WordPress revision', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Recommended before every content modification.', 'dma-internlink-mapper' ) . '</small></span></label><label class="ilsm-quality-option"><input type="checkbox" name="insert_audit_log" value="1" ' . checked( ! empty( $s['insert_audit_log'] ), true, false ) . '><span><strong>' . esc_html__( 'Keep failed-attempt diagnostics', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Successful insertions and undo history are always stored for data integrity. This option additionally keeps failed-attempt details in insertion history.', 'dma-internlink-mapper' ) . '</small></span></label><label class="ilsm-quality-option"><input type="checkbox" name="insert_dry_run" value="1" ' . checked( ! empty( $s['insert_dry_run'] ), true, false ) . '><span><strong>' . esc_html__( 'Preview Mode', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Safely test every insertion without changing posts, pages, Gutenberg blocks, or Elementor data. Enabled by default.', 'dma-internlink-mapper' ) . '</small></span></label><label class="ilsm-quality-option"><input type="checkbox" name="insert_auto_enabled" value="1" ' . checked( ! empty( $s['insert_auto_enabled'] ), true, false ) . '><span><strong>' . esc_html__( 'Enable reviewed bulk processing', 'dma-internlink-mapper' ) . '</strong><small>' . esc_html__( 'Processes only opportunities you explicitly select. It never runs on page load or WordPress Heartbeat.', 'dma-internlink-mapper' ) . '</small></span></label></div></section>';
         echo '<section class="ilsm-panel ilsm-settings-card"><div class="ilsm-settings-head"><span class="ilsm-settings-icon"><i class="fa fa-filter"></i></span><div><h2>' . esc_html__( 'Opportunity Eligibility', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Exclude utility and non-indexable pages before suggestions are generated.', 'dma-internlink-mapper' ) . '</p></div></div><div class="ilsm-report-quality-grid">';
         foreach ( array(
             'opportunity_exclude_noindex' => array( __( 'Exclude noindex pages', 'dma-internlink-mapper' ), __( 'Applies to both source and destination pages, including supported SEO plugin metadata.', 'dma-internlink-mapper' ) ),
@@ -1437,7 +1448,7 @@ class ILSM_Admin {
             'broken_monitor_enabled' => ! empty( $_POST['broken_monitor_enabled'] ) ? 1 : 0,
             'broken_monitor_external' => ! empty( $_POST['broken_monitor_external'] ) ? 1 : 0,
             'broken_monitor_batch_size' => max( 1, min( 10, absint( wp_unslash( $_POST['broken_monitor_batch_size'] ?? 5 ) ) ) ),
-            'report_per_page'     => in_array( absint( wp_unslash( $_POST['report_per_page'] ?? 50 ) ), array( 25, 50, 100, 200 ), true ) ? absint( $_POST['report_per_page'] ) : 50,
+            'report_per_page'     => in_array( absint( wp_unslash( $_POST['report_per_page'] ?? 50 ) ), array( 25, 50, 100, 200 ), true ) ? absint( wp_unslash( $_POST['report_per_page'] ) ) : 50,
             'insert_min_confidence' => max( 60, min( 100, absint( wp_unslash( $_POST['insert_min_confidence'] ?? 70 ) ) ) ),
             'insert_max_per_source' => max( 1, min( 10, absint( wp_unslash( $_POST['insert_max_per_source'] ?? 2 ) ) ) ),
             'insert_max_per_run' => max( 1, min( 100, absint( wp_unslash( $_POST['insert_max_per_run'] ?? 20 ) ) ) ),
@@ -1463,20 +1474,48 @@ class ILSM_Admin {
         $new['local_assistant'] = isset( $old['local_assistant'] ) ? (int) $old['local_assistant'] : 1;
         $new['suggestion_limit'] = isset( $old['suggestion_limit'] ) ? absint( $old['suggestion_limit'] ) : 12;
         update_option( 'ilsm_settings', $new, false );
+        $stored_settings = get_option( 'ilsm_settings', null );
+        if ( ! is_array( $stored_settings ) || $stored_settings !== $new ) {
+            wp_die(
+                esc_html__( 'WordPress could not persist the requested DMA InternLink Mapper settings. No success was recorded. Reload the settings page and try again.', 'dma-internlink-mapper' ),
+                esc_html__( 'Settings were not saved', 'dma-internlink-mapper' ),
+                array( 'response' => 500, 'back_link' => true )
+            );
+        }
         ILSM_Broken_Link_Maintenance::sync_schedule();
 
         $old_min = max( 60, min( 100, absint( $old['insert_min_confidence'] ?? 70 ) ) );
         $eligibility_changed = $old_min !== $new['insert_min_confidence']
             || absint( $old['insert_min_source_words'] ?? 300 ) !== $new['insert_min_source_words']
             || absint( $old['insert_min_word_distance'] ?? 120 ) !== $new['insert_min_word_distance']
-            || absint( $old['insert_density_per_1000'] ?? 6 ) !== $new['insert_density_per_1000'];
+            || absint( $old['insert_density_per_1000'] ?? 6 ) !== $new['insert_density_per_1000']
+            || (int) ( ! empty( $old['opportunity_exclude_noindex'] ) ) !== $new['opportunity_exclude_noindex']
+            || (int) ( ! empty( $old['opportunity_exclude_privacy'] ) ) !== $new['opportunity_exclude_privacy']
+            || (int) ( ! empty( $old['opportunity_exclude_legal'] ) ) !== $new['opportunity_exclude_legal']
+            || (int) ( ! empty( $old['opportunity_exclude_cookies'] ) ) !== $new['opportunity_exclude_cookies'];
         if ( $eligibility_changed ) {
             global $wpdb;
             // Existing Ready rows were generated under different SEO eligibility rules.
             // Preserve inserted/history states and require a clean regeneration.
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-            $wpdb->query( "DELETE FROM " . ILSM_Database::table( 'opportunities' ) . " WHERE status='new'" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Eligibility state is plugin-owned and must be updated immediately.
+            $deleted = $wpdb->query( $wpdb->prepare( "DELETE FROM %i WHERE status='new'", ILSM_Database::table( 'opportunities' ) ) );
+            if ( false === $deleted ) {
+                update_option( 'ilsm_settings', $old, false );
+                ILSM_Broken_Link_Maintenance::sync_schedule();
+                wp_die(
+                    esc_html__( 'The settings were stored, but WordPress could not invalidate opportunities generated under the previous eligibility rules. The previous settings were restored to avoid a partial configuration change.', 'dma-internlink-mapper' ),
+                    esc_html__( 'Settings update stopped safely', 'dma-internlink-mapper' ),
+                    array( 'response' => 500, 'back_link' => true )
+                );
+            }
             update_option( 'ilsm_opportunity_engine_version', '', false );
+            if ( '' !== (string) get_option( 'ilsm_opportunity_engine_version', '' ) ) {
+                wp_die(
+                    esc_html__( 'Eligibility settings were saved and old Ready opportunities were cleared, but WordPress could not mark the opportunity engine for regeneration. Regenerate opportunities before inserting links.', 'dma-internlink-mapper' ),
+                    esc_html__( 'Opportunity regeneration required', 'dma-internlink-mapper' ),
+                    array( 'response' => 500, 'back_link' => true )
+                );
+            }
         }
 
         wp_safe_redirect( add_query_arg( 'updated', '1', admin_url( 'admin.php?page=ilsm-settings' ) ) );
@@ -1485,8 +1524,8 @@ class ILSM_Admin {
 
     private function latest() {
         global $wpdb;
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-        $row = $wpdb->get_row( 'SELECT * FROM ' . ILSM_Database::table( 'scans' ) . ' ORDER BY id DESC LIMIT 1', ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned custom tables require direct SQL; identifiers are generated from a strict internal allowlist, mutable scan state must not be cached, and generated placeholders are completed with validated integer arguments.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Latest mutable scan state must be read fresh.
+        $row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT 1', ILSM_Database::table( 'scans' ) ), ARRAY_A );
         if ( ! $row ) { return array( 'status' => 'not started', 'percent' => 0, 'batch_no' => 0, 'scanned_items' => 0, 'total_items' => 0 ); }
         $row['percent'] = $row['total_items'] ? min( 100, round( $row['scanned_items'] / $row['total_items'] * 100 ) ) : 0;
         return $row;
@@ -1499,22 +1538,23 @@ class ILSM_Admin {
         $p = ILSM_Database::table( 'pages' );
         $l = ILSM_Database::table( 'links' );
         return array(
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-            'pages'     => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$p} WHERE scan_id=%d", $scan ) ),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Only fixed or allowlisted SQL identifiers are interpolated.
-            'links'     => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external'", $scan ) ),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Only fixed or allowlisted SQL identifiers are interpolated.
-            'incoming'  => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(SUM(incoming_count),0) FROM {$p} WHERE scan_id=%d", $scan ) ),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Only fixed or allowlisted SQL identifiers are interpolated.
-            'outgoing'  => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(SUM(outgoing_count),0) FROM {$p} WHERE scan_id=%d", $scan ) ),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Only fixed or allowlisted SQL identifiers are interpolated.
-            'broken'    => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type='broken'", $scan ) ),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Only fixed or allowlisted SQL identifiers are interpolated.
-            'redirects' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type='redirect'", $scan ) ),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Only fixed or allowlisted SQL identifiers are interpolated.
-            'orphans'   => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$p} WHERE scan_id=%d AND is_orphan=1", $scan ) ),
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Only fixed or allowlisted SQL identifiers are interpolated.
-            'weak'      => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type IN ('weak_anchor','empty_anchor')", $scan ) ),
+            // Fresh scan metrics are read from plugin-owned tables.
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'pages'     => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d", $p, $scan ) ),
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'links'     => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external'", $l, $scan ) ),
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'incoming'  => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(SUM(incoming_count),0) FROM %i WHERE scan_id=%d", $p, $scan ) ),
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'outgoing'  => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(SUM(outgoing_count),0) FROM %i WHERE scan_id=%d", $p, $scan ) ),
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'broken'    => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type='broken'", $l, $scan ) ),
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'redirects' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type='redirect'", $l, $scan ) ),
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'orphans'   => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND is_orphan=1", $p, $scan ) ),
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+            'weak'      => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type IN ('weak_anchor','empty_anchor')", $l, $scan ) ),
         );
     }
 
@@ -1522,23 +1562,23 @@ class ILSM_Admin {
         global $wpdb;
         $scan = ILSM_Database::latest_completed_scan_id();
         if ( ! $scan || ! $post_id ) { return array(); }
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        return (array) $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Database::table( 'pages' ) . ' WHERE scan_id=%d AND post_id=%d', $scan, $post_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current page snapshot must be read fresh.
+        return (array) $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE scan_id=%d AND post_id=%d', ILSM_Database::table( 'pages' ), $scan, $post_id ), ARRAY_A );
     }
     private function best_page() {
         global $wpdb;
         $scan = ILSM_Database::latest_completed_scan_id();
         if ( ! $scan ) { return array(); }
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        return (array) $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Database::table( 'pages' ) . ' WHERE scan_id=%d ORDER BY seo_score DESC, incoming_count DESC LIMIT 1', $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current page snapshot must be read fresh.
+        return (array) $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE scan_id=%d ORDER BY seo_score DESC, incoming_count DESC LIMIT 1', ILSM_Database::table( 'pages' ), $scan ), ARRAY_A );
     }
 
     private function page_options( $selected = 0 ) {
         global $wpdb;
         $scan = ILSM_Database::latest_completed_scan_id();
         if ( ! $scan ) { return '<option value="0">' . esc_html__( 'No completed scan', 'dma-internlink-mapper' ) . '</option>'; }
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT post_id,title FROM ' . ILSM_Database::table( 'pages' ) . ' WHERE scan_id=%d ORDER BY title ASC LIMIT 1000', $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current page snapshot must be read fresh.
+        $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT post_id,title FROM %i WHERE scan_id=%d ORDER BY title ASC LIMIT 1000', ILSM_Database::table( 'pages' ), $scan ) );
         $html = '';
         foreach ( $rows as $row ) {
             $html .= '<option value="' . absint( $row->post_id ) . '" ' . selected( $selected, $row->post_id, false ) . '>' . esc_html( $this->display_text( $row->title ) ) . '</option>';
@@ -1549,11 +1589,11 @@ class ILSM_Admin {
     private function link_preview_table() {
         global $wpdb;
         $scan = ILSM_Database::latest_completed_scan_id();
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        $rows = $scan ? $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Database::table( 'links' ) . ' WHERE scan_id=%d ORDER BY id DESC LIMIT 5', $scan ) ) : array();
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current link snapshot must be read fresh.
+        $rows = $scan ? $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE scan_id=%d ORDER BY id DESC LIMIT 5', ILSM_Database::table( 'links' ), $scan ) ) : array();
         $html = '<div class="ilsm-table-scroll"><table class="ilsm-table ilsm-table-compact"><thead><tr><th>' . esc_html__( 'Source', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Anchor', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Target', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Status', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>';
         foreach ( $rows as $r ) {
-            $html .= '<tr><td>' . esc_html( $this->display_text( $r->source_title ) ) . '</td><td>' . esc_html( $this->display_text( $r->anchor_text ?: '—' ) ) . '</td><td>' . esc_html( $this->display_text( $r->target_title ?: $r->target_url ) ) . '</td><td>' . $this->status_badge( $r->issue_type ) . '</td></tr>';
+            $html .= '<tr><td>' . esc_html( $this->display_text( $r->source_title ) ) . '</td><td>' . esc_html( $this->display_text( $r->anchor_text ?: '—' ) ) . '</td><td>' . esc_html( $this->display_text( $r->target_title ?: $r->target_url ) ) . '</td><td>' . wp_kses( $this->status_badge( $r->issue_type ), $this->admin_helper_allowed_html() ) . '</td></tr>';
         }
         if ( ! $rows ) { $html .= '<tr><td colspan="4" class="ilsm-empty-cell">' . esc_html__( 'Run your first scan to populate the report.', 'dma-internlink-mapper' ) . '</td></tr>'; }
         return $html . '</tbody></table></div>';
@@ -1587,18 +1627,19 @@ class ILSM_Admin {
         header( 'Content-Disposition: attachment; filename=internal-links-' . absint( $scan ) . '.csv' );
         $out = fopen( 'php://output', 'w' );
         fputcsv( $out, array( __( 'Source', 'dma-internlink-mapper' ), __( 'Anchor', 'dma-internlink-mapper' ), __( 'Target', 'dma-internlink-mapper' ), __( 'Location', 'dma-internlink-mapper' ), __( 'Follow', 'dma-internlink-mapper' ), __( 'Issue', 'dma-internlink-mapper' ) ) );
-        $offset = 0;
+        $last_id = 0;
         do {
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT source_title,anchor_text,target_url,link_location,follow_status,issue_type FROM ' . ILSM_Database::table( 'links' ) . ' WHERE scan_id=%d ORDER BY id LIMIT 500 OFFSET %d', $scan, $offset ), ARRAY_A );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- CSV export reads an immutable completed-scan snapshot in bounded primary-key batches.
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT id,source_title,anchor_text,target_url,link_location,follow_status,issue_type FROM %i WHERE scan_id=%d AND id>%d ORDER BY id ASC LIMIT 500', ILSM_Database::table( 'links' ), $scan, $last_id ), ARRAY_A );
             foreach ( $rows as $row ) {
+                $last_id = max( $last_id, absint( $row['id'] ) );
+                unset( $row['id'] );
                 foreach ( $row as &$value ) {
                     if ( preg_match( '/^[=+\-@\t\r]/', (string) $value ) ) { $value = "'" . $value; }
                 }
                 unset( $value );
                 fputcsv( $out, $row );
             }
-            $offset += 500;
         } while ( count( $rows ) === 500 );
         fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Closing the streamed php://output CSV handle is required.
         exit;
@@ -1615,7 +1656,7 @@ class ILSM_Admin {
      * report renderer and returns an actual application/pdf download.
      */
     public function export_visual_pdf() {
-        if ( ! current_user_can( 'ilsm_view_reports' ) ) {
+        if ( ! current_user_can( 'ilsm_export_reports' ) ) {
             wp_die( esc_html__( 'You do not have permission to export this report.', 'dma-internlink-mapper' ), '', array( 'response' => 403 ) );
         }
         check_admin_referer( 'ilsm_export_visual_pdf' );
@@ -1638,8 +1679,8 @@ class ILSM_Admin {
         if ( false === $jpeg || strlen( $jpeg ) < 100 ) {
             wp_die( esc_html__( 'The visual snapshot could not be decoded.', 'dma-internlink-mapper' ), '', array( 'response' => 400 ) );
         }
-        $image_info = @getimagesizefromstring( $jpeg ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Invalid user-provided image data is handled explicitly below.
-        if ( ! is_array( $image_info ) || IMAGETYPE_JPEG !== (int) $image_info[2] || $image_info[0] < 1 || $image_info[1] < 1 ) {
+        $image_info = ILSM_PDF_Report::jpeg_dimensions( $jpeg );
+        if ( ! is_array( $image_info ) || $image_info['width'] < 1 || $image_info['height'] < 1 ) {
             wp_die( esc_html__( 'The visual snapshot is not a valid JPEG image.', 'dma-internlink-mapper' ), '', array( 'response' => 400 ) );
         }
 
@@ -1651,7 +1692,7 @@ class ILSM_Admin {
         );
         $title = $labels[ $view ];
         $style = isset( $_POST['style'] ) ? sanitize_text_field( wp_unslash( $_POST['style'] ) ) : '';
-        $post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+        $post_id = isset( $_POST['post_id'] ) ? absint( wp_unslash( $_POST['post_id'] ) ) : 0;
 
         $metrics = array();
         if ( isset( $_POST['metrics'] ) ) {
@@ -1772,18 +1813,18 @@ class ILSM_Admin {
         $pages_table = ILSM_Database::table( 'pages' );
         $links_table = ILSM_Database::table( 'links' );
         $scan_table  = ILSM_Database::table( 'scans' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $scan_row = $wpdb->get_row( $wpdb->prepare( "SELECT started_at,completed_at FROM {$scan_table} WHERE id=%d", $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Completed scan metadata must be read fresh for the export.
+        $scan_row = $wpdb->get_row( $wpdb->prepare( 'SELECT started_at,completed_at FROM %i WHERE id=%d', $scan_table, $scan ), ARRAY_A );
 
         $safe_ratio = static function( $part, $whole ) {
             return $whole > 0 ? min( 1, max( 0, $part / $whole ) ) : 0;
         };
         $pages = max( 1, (int) $stats['pages'] );
         $links = max( 1, (int) $stats['links'] );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $pages_with_incoming = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$pages_table} WHERE scan_id=%d AND incoming_count>0", $scan ) );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $avg_outgoing = (float) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(AVG(outgoing_count),0) FROM {$pages_table} WHERE scan_id=%d", $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Completed scan metrics must be read fresh for the export.
+        $pages_with_incoming = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE scan_id=%d AND incoming_count>0', $pages_table, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Completed scan metrics must be read fresh for the export.
+        $avg_outgoing = (float) $wpdb->get_var( $wpdb->prepare( 'SELECT COALESCE(AVG(outgoing_count),0) FROM %i WHERE scan_id=%d', $pages_table, $scan ) );
 
         $components = array(
             array( __( 'Broken links', 'dma-internlink-mapper' ), 25, 25 * max( 0, 1 - ( $safe_ratio( $stats['broken'], $links ) * 20 ) ), __( 'Broken links divided by all discovered links.', 'dma-internlink-mapper' ) ),
@@ -1875,8 +1916,8 @@ class ILSM_Admin {
         $pdf->table( array( 'Priority', 'Recommended action', 'Why it matters' ), $priorities, array( 65, 210, 230 ), 7.5 );
 
         $pdf->heading( 'Pages needing attention', 'Pages are ordered by orphan status, broken links, weak anchors, and low SEO score.' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $attention = $wpdb->get_results( $wpdb->prepare( "SELECT title,post_type,incoming_count,outgoing_count,broken_count,weak_anchor_count,seo_score FROM {$pages_table} WHERE scan_id=%d ORDER BY is_orphan DESC,broken_count DESC,weak_anchor_count DESC,seo_score ASC LIMIT 20", $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Completed scan rows must be read fresh for the export.
+        $attention = $wpdb->get_results( $wpdb->prepare( 'SELECT title,post_type,incoming_count,outgoing_count,broken_count,weak_anchor_count,seo_score FROM %i WHERE scan_id=%d ORDER BY is_orphan DESC,broken_count DESC,weak_anchor_count DESC,seo_score ASC LIMIT 20', $pages_table, $scan ), ARRAY_A );
         $rows = array();
         foreach ( $attention as $row ) {
             $rows[] = array( $this->display_text( $row['title'] ), $row['post_type'], $row['incoming_count'], $row['outgoing_count'], $row['broken_count'], $row['weak_anchor_count'], $row['seo_score'] );
@@ -1886,8 +1927,8 @@ class ILSM_Admin {
         // Detailed issue appendix.
         $pdf->new_page();
         $pdf->heading( 'Issue appendix', 'A concise sample of actionable issues from the latest scan. CSV export remains available for the complete raw dataset.' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-        $issue_rows = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_url,issue_type,http_status FROM {$links_table} WHERE scan_id=%d AND issue_type<>'' ORDER BY FIELD(issue_type,'broken','redirect','empty_anchor','weak_anchor'),id DESC LIMIT 60", $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Completed scan rows must be read fresh for the export.
+        $issue_rows = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_url,issue_type,http_status FROM %i WHERE scan_id=%d AND issue_type<>'' ORDER BY FIELD(issue_type,'broken','redirect','empty_anchor','weak_anchor'),id DESC LIMIT 60", $links_table, $scan ), ARRAY_A );
         $rows = array();
         foreach ( $issue_rows as $row ) {
             $status = $row['http_status'] ? (string) $row['http_status'] : '-';
@@ -1917,7 +1958,7 @@ class ILSM_Admin {
         check_admin_referer( 'ilsm_export_knowledge_pdf' );
         $scope = isset( $_GET['scope'] ) ? sanitize_key( wp_unslash( $_GET['scope'] ) ) : 'site'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Nonce verified above.
         if ( 'page' === $scope ) {
-            $post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Nonce verified above.
+            $post_id = isset( $_GET['post_id'] ) ? absint( wp_unslash( $_GET['post_id'] ) ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Nonce verified above.
             $this->export_selected_page_pdf( $post_id );
         }
         $this->export_sitewide_pdf();
@@ -1928,8 +1969,8 @@ class ILSM_Admin {
         $scan = ILSM_Database::latest_completed_scan_id();
         if ( ! $scan ) { wp_die( esc_html__( 'Run a complete scan before exporting a report.', 'dma-internlink-mapper' ) ); }
         $scan_table = ILSM_Database::table( 'scans' );
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Plugin-owned allowlisted table; fresh snapshot metadata is required.
-        $scan_row = (array) $wpdb->get_row( $wpdb->prepare( "SELECT id,started_at,completed_at,scanned_items,total_items FROM {$scan_table} WHERE id=%d", $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Fresh completed-scan metadata is required for report integrity.
+        $scan_row = (array) $wpdb->get_row( $wpdb->prepare( 'SELECT id,started_at,completed_at,scanned_items,total_items FROM %i WHERE id=%d', $scan_table, $scan ), ARRAY_A );
         return array( 'scan_id'=>$scan, 'scan'=>$scan_row, 'site_name'=>get_bloginfo('name'), 'site_url'=>home_url('/'), 'generated'=>current_time('mysql') );
     }
 
@@ -1952,37 +1993,53 @@ class ILSM_Admin {
         $l    = ILSM_Database::checked_table( ILSM_Database::table( 'links' ) );
         $i    = ILSM_Database::checked_table( ILSM_Database::table( 'issues' ) );
 
-        // phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Read-only export from plugin-owned allowlisted tables. One completed scan ID is used consistently throughout the report.
-        $pages     = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$p} WHERE scan_id=%d", $scan ) );
-        $internal  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external'", $scan ) );
-        $external  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type='external'", $scan ) );
-        $orphans   = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$p} WHERE scan_id=%d AND is_orphan=1", $scan ) );
-        $broken    = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type='broken'", $scan ) );
-        $redirects = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type='redirect'", $scan ) );
-        $external_broken = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type='external' AND issue_type='broken'", $scan ) );
-        $external_redirects = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type='external' AND issue_type='redirect'", $scan ) );
-        $weak      = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type IN ('weak_anchor','empty_anchor')", $scan ) );
-        $no_out    = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$p} WHERE scan_id=%d AND outgoing_count=0", $scan ) );
-        $avg_seo   = (int) round( (float) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(AVG(seo_score),0) FROM {$p} WHERE scan_id=%d AND seo_verified=1", $scan ) ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $pages     = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d", $p, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $internal  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $external  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type='external'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $orphans   = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND is_orphan=1", $p, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $broken    = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type='broken'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $redirects = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type='redirect'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $external_broken = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type='external' AND issue_type='broken'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $external_redirects = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type='external' AND issue_type='redirect'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $weak      = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type IN ('weak_anchor','empty_anchor')", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $no_out    = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE scan_id=%d AND outgoing_count=0', $p, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $avg_seo   = (int) round( (float) $wpdb->get_var( $wpdb->prepare( 'SELECT COALESCE(AVG(seo_score),0) FROM %i WHERE scan_id=%d AND seo_verified=1', $p, $scan ) ) );
         $score     = $this->pdf_architecture_score( $pages, $internal, $orphans, $broken, $no_out );
-        $scan_types = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT post_type FROM {$p} WHERE scan_id=%d AND post_type<>''", $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $scan_types = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT post_type FROM %i WHERE scan_id=%d AND post_type<>''", $p, $scan ) );
         if ( $scan_types ) {
             $architecture = ILSM_Architecture_Service::instance()->build( array( 'mode'=>'knowledge', 'root_id'=>0, 'max_depth'=>0, 'post_types'=>array_values( array_map( 'sanitize_key', $scan_types ) ), 'status'=>'all', 'min_in'=>0, 'min_out'=>0 ) );
             if ( ! is_wp_error( $architecture ) && isset( $architecture['meta']['totals']['architecture_score'] ) ) { $score = (int) $architecture['meta']['totals']['architecture_score']; }
         }
-        $top_pages = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,title,url,incoming_count,outgoing_count,seo_score,is_orphan FROM {$p} WHERE scan_id=%d ORDER BY incoming_count DESC,outgoing_count DESC LIMIT 80", $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $top_pages = $wpdb->get_results( $wpdb->prepare( 'SELECT post_id,title,url,incoming_count,outgoing_count,seo_score,is_orphan FROM %i WHERE scan_id=%d ORDER BY incoming_count DESC,outgoing_count DESC LIMIT 80', $p, $scan ), ARRAY_A );
         $top_ids = array_map( 'absint', array_column( $top_pages, 'post_id' ) );
         $graph_edges = array();
         if ( $top_ids ) {
             $placeholders = implode( ',', array_fill( 0, count( $top_ids ), '%d' ) );
-            $args = array_merge( array( $scan ), $top_ids, $top_ids );
-            $graph_edges = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,target_post_id FROM {$l} WHERE scan_id=%d AND source_post_id IN ({$placeholders}) AND target_post_id IN ({$placeholders}) AND destination_type<>'external'", ...$args ), ARRAY_A );
+            $args = array_merge( array( $l, $scan ), $top_ids, $top_ids );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- IN placeholders are generated only from validated integer post IDs; the table identifier and all values are passed to prepare().
+            $graph_edges = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,target_post_id FROM %i WHERE scan_id=%d AND source_post_id IN ({$placeholders}) AND target_post_id IN ({$placeholders}) AND destination_type<>'external'", ...$args ), ARRAY_A );
         }
-        $broken_rows = $wpdb->get_results( $wpdb->prepare( "SELECT target_url,COUNT(*) AS instances FROM {$l} WHERE scan_id=%d AND issue_type='broken' GROUP BY target_url ORDER BY instances DESC LIMIT 5", $scan ), ARRAY_A );
-        $redirect_rows = $wpdb->get_results( $wpdb->prepare( "SELECT target_url,redirect_url,http_status,COUNT(*) AS instances FROM {$l} WHERE scan_id=%d AND issue_type='redirect' GROUP BY target_url,redirect_url,http_status ORDER BY instances DESC LIMIT 5", $scan ), ARRAY_A );
-        $orphan_rows = $wpdb->get_results( $wpdb->prepare( "SELECT title,url FROM {$p} WHERE scan_id=%d AND is_orphan=1 ORDER BY title LIMIT 5", $scan ), ARRAY_A );
-        $heading_rows = $wpdb->get_results( $wpdb->prepare( "SELECT issue_type,COUNT(*) AS total FROM {$i} WHERE scan_id=%d AND issue_type IN ('missing_h1','multiple_h1','empty_heading','skipped_heading_level') GROUP BY issue_type", $scan ), ARRAY_A );
-        // phpcs:enable
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $broken_rows = $wpdb->get_results( $wpdb->prepare( "SELECT target_url,COUNT(*) AS instances FROM %i WHERE scan_id=%d AND issue_type='broken' GROUP BY target_url ORDER BY instances DESC LIMIT 5", $l, $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $redirect_rows = $wpdb->get_results( $wpdb->prepare( "SELECT target_url,redirect_url,http_status,COUNT(*) AS instances FROM %i WHERE scan_id=%d AND issue_type='redirect' GROUP BY target_url,redirect_url,http_status ORDER BY instances DESC LIMIT 5", $l, $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $orphan_rows = $wpdb->get_results( $wpdb->prepare( 'SELECT title,url FROM %i WHERE scan_id=%d AND is_orphan=1 ORDER BY title LIMIT 5', $p, $scan ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $heading_rows = $wpdb->get_results( $wpdb->prepare( "SELECT issue_type,COUNT(*) AS total FROM %i WHERE scan_id=%d AND issue_type IN ('missing_h1','multiple_h1','empty_heading','skipped_heading_level') GROUP BY issue_type", $i, $scan ), ARRAY_A );
 
         $heading_counts = array( 'missing_h1'=>0, 'multiple_h1'=>0, 'empty_heading'=>0, 'skipped_heading_level'=>0 );
         foreach ( $heading_rows as $row ) { $heading_counts[ $row['issue_type'] ] = (int) $row['total']; }
@@ -2078,7 +2135,8 @@ class ILSM_Admin {
         $pdf->new_page();
         $pdf->report_header( 'Knowledge Graph Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, 'Generated: ' . $ctx['generated'] );
         $pdf->heading( 'Detailed link analysis', 'A sample of the most important link occurrences from the completed scan. Complete appendices continue after the visual summary pages.' );
-        $sample = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_title,target_url,destination_type,link_location,follow_status,issue_type,http_status FROM {$l} WHERE scan_id=%d ORDER BY destination_type='external',id LIMIT 10", $scan ), ARRAY_A ); // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Read-only sample from allowlisted table.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only report sample from the completed scan.
+        $sample = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_title,target_url,destination_type,link_location,follow_status,issue_type,http_status FROM %i WHERE scan_id=%d ORDER BY destination_type='external',id LIMIT 10", $l, $scan ), ARRAY_A );
         $rows = array(); $n = 1; foreach ( $sample as $r ) { $rows[] = array( $n++, $this->display_text( $r['source_title'] ), $this->display_text( $r['target_title'] ?: $r['target_url'] ), 'external' === $r['destination_type'] ? 'External' : 'Internal', $r['link_location'], $r['follow_status'], $this->pdf_status_label( $r['issue_type'] ), $avg_seo . '/100' ); }
         if ( ! $rows ) { $rows[] = array( '1', 'No links found', '-', '-', '-', '-', '-', '-' ); }
         $pdf->table( array( '#', 'Source Page', 'Target Page', 'Type', 'Location', 'Follow', 'Status', 'SEO' ), $rows, array( 22, 125, 130, 48, 50, 42, 52, 45 ), 5.8 );
@@ -2111,54 +2169,123 @@ class ILSM_Admin {
         $pdf->legend_item( 392, 379, 'Green - healthy', 'Strong / connected', array( 34, 197, 94 ) ); $pdf->legend_item( 392, 352, 'Blue - normal', 'Connected link', array( 37, 99, 235 ) ); $pdf->legend_item( 392, 325, 'Orange - review', 'Needs improvement', array( 249, 115, 22 ) ); $pdf->legend_item( 392, 298, 'Red - problem', 'Attention needed', array( 239, 68, 68 ) );
 
         $pdf->set_y( 250 );
-        $pdf->heading( 'Report appendices', 'The following pages print complete records from the completed scan. No "View all" shortcut is used inside the PDF.' );
+        $pdf->heading(
+            __( 'Report appendices', 'dma-internlink-mapper' ),
+            sprintf(
+                /* translators: %d: maximum number of rows printed per PDF appendix. */
+                __( 'PDF appendices are intentionally bounded to the first %d rows per dataset so large sites cannot exhaust PHP memory. Counts above remain complete; use CSV for the complete internal-link occurrence dataset.', 'dma-internlink-mapper' ),
+                self::PDF_APPENDIX_LIMIT
+            )
+        );
 
-        // Complete pages table.
-        // phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Read-only PDF appendix queries use plugin-owned table identifiers that have passed ILSM_Database::checked_table(); values remain prepared.
-        $pdf->new_page(); $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, 'Complete data appendix' ); $pdf->heading( 'All scanned pages', 'Every page in this completed scan snapshot. Table headers repeat automatically on each new PDF page.' );
-        $offset = 0; do {
-            $chunk = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,title,post_type,incoming_count,outgoing_count,broken_count,weak_anchor_count,is_orphan,seo_score FROM {$p} WHERE scan_id=%d ORDER BY id LIMIT 300 OFFSET %d", $scan, $offset ), ARRAY_A ); $rows = array(); foreach ( $chunk as $r ) { $rows[] = array( $r['post_id'], $this->display_text( $r['title'] ), $r['post_type'], $r['incoming_count'], $r['outgoing_count'], $r['broken_count'], $r['weak_anchor_count'], $r['seo_score'] ); } $pdf->table( array( 'ID', 'Page', 'Type', 'In', 'Out', 'Broken', 'Weak', 'SEO' ), $rows, array( 35, 225, 55, 35, 35, 45, 45, 52 ), 6.2 ); $offset += 300; } while ( count( $chunk ) === 300 );
+        // Large-site safety: PDF is an in-memory presentation format. Keep each
+        // appendix bounded and use primary-key cursors so runtime does not grow
+        // with OFFSET. Complete counts remain in the report summary.
+        // Scanned pages appendix.
+        $pdf->new_page();
+        $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, __( 'Bounded data appendix', 'dma-internlink-mapper' ) );
+        $pdf->heading(
+            __( 'Scanned pages', 'dma-internlink-mapper' ),
+            sprintf( /* translators: 1: PDF row limit, 2: total scanned pages. */ __( 'Showing up to %1$d of %2$d scanned pages.', 'dma-internlink-mapper' ), self::PDF_APPENDIX_LIMIT, $pages )
+        );
+        $last_id = 0;
+        $printed = 0;
+        do {
+            $limit = min( self::PDF_APPENDIX_BATCH, self::PDF_APPENDIX_LIMIT - $printed );
+            if ( $limit <= 0 ) { break; }
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is read in bounded primary-key batches.
+            $chunk = $wpdb->get_results( $wpdb->prepare( 'SELECT id,post_id,title,post_type,incoming_count,outgoing_count,broken_count,weak_anchor_count,seo_score FROM %i WHERE scan_id=%d AND id>%d ORDER BY id ASC LIMIT %d', $p, $scan, $last_id, $limit ), ARRAY_A );
+            $rows = array();
+            foreach ( $chunk as $r ) {
+                $last_id = max( $last_id, absint( $r['id'] ) );
+                $rows[] = array( $r['post_id'], $this->display_text( $r['title'] ), $r['post_type'], $r['incoming_count'], $r['outgoing_count'], $r['broken_count'], $r['weak_anchor_count'], $r['seo_score'] );
+            }
+            if ( $rows ) { $pdf->table( array( 'ID', 'Page', 'Type', 'In', 'Out', 'Broken', 'Weak', 'SEO' ), $rows, array( 35, 225, 55, 35, 35, 45, 45, 52 ), 6.2 ); }
+            $printed += count( $chunk );
+        } while ( count( $chunk ) === $limit && $printed < self::PDF_APPENDIX_LIMIT );
 
-        $pdf->new_page(); $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, 'Complete data appendix' ); $pdf->heading( 'All internal links', 'Every scanned internal-link occurrence is printed. Repeated links remain repeated because each occurrence is real crawl evidence.' );
-        $offset = 0; do {
-            $chunk = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_title,target_url,link_location,follow_status,issue_type,http_status FROM {$l} WHERE scan_id=%d AND destination_type<>'external' ORDER BY id LIMIT 300 OFFSET %d", $scan, $offset ), ARRAY_A ); $rows = array(); foreach ( $chunk as $r ) { $rows[] = array( $this->display_text( $r['source_title'] ), $this->display_text( $r['anchor_text'] ?: '(empty)' ), $this->display_text( $r['target_title'] ?: $r['target_url'] ), $r['link_location'], $r['follow_status'], $this->pdf_status_label( $r['issue_type'] ), $r['http_status'] ?: '-' ); } $pdf->table( array( 'Source', 'Anchor', 'Target', 'Location', 'Follow', 'Status', 'HTTP' ), $rows, array( 125, 105, 135, 55, 45, 45, 30 ), 5.9 ); $offset += 300; } while ( count( $chunk ) === 300 );
+        // Internal-link occurrence appendix.
+        $pdf->new_page();
+        $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, __( 'Bounded data appendix', 'dma-internlink-mapper' ) );
+        $pdf->heading(
+            __( 'Internal links', 'dma-internlink-mapper' ),
+            sprintf( /* translators: 1: PDF row limit, 2: total internal-link occurrences. */ __( 'Showing up to %1$d of %2$d scanned internal-link occurrences.', 'dma-internlink-mapper' ), self::PDF_APPENDIX_LIMIT, $internal )
+        );
+        $last_id = 0;
+        $printed = 0;
+        do {
+            $limit = min( self::PDF_APPENDIX_BATCH, self::PDF_APPENDIX_LIMIT - $printed );
+            if ( $limit <= 0 ) { break; }
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is read in bounded primary-key batches.
+            $chunk = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_title,anchor_text,target_title,target_url,link_location,follow_status,issue_type,http_status FROM %i WHERE scan_id=%d AND id>%d AND destination_type<>'external' ORDER BY id ASC LIMIT %d", $l, $scan, $last_id, $limit ), ARRAY_A );
+            $rows = array();
+            foreach ( $chunk as $r ) {
+                $last_id = max( $last_id, absint( $r['id'] ) );
+                $rows[] = array( $this->display_text( $r['source_title'] ), $this->display_text( $r['anchor_text'] ?: '(empty)' ), $this->display_text( $r['target_title'] ?: $r['target_url'] ), $r['link_location'], $r['follow_status'], $this->pdf_status_label( $r['issue_type'] ), $r['http_status'] ?: '-' );
+            }
+            if ( $rows ) { $pdf->table( array( 'Source', 'Anchor', 'Target', 'Location', 'Follow', 'Status', 'HTTP' ), $rows, array( 125, 105, 135, 55, 45, 45, 30 ), 5.9 ); }
+            $printed += count( $chunk );
+        } while ( count( $chunk ) === $limit && $printed < self::PDF_APPENDIX_LIMIT );
 
-        $pdf->new_page(); $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, 'Complete data appendix' ); $pdf->heading( 'All external links', 'Third-party destinations are reported separately and are not mixed into internal-link architecture metrics.' );
-        $offset = 0; do {
-            $chunk = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_url,link_location,follow_status,issue_type,http_status FROM {$l} WHERE scan_id=%d AND destination_type='external' ORDER BY id LIMIT 300 OFFSET %d", $scan, $offset ), ARRAY_A ); $rows = array(); foreach ( $chunk as $r ) { $rows[] = array( $this->display_text( $r['source_title'] ), $this->display_text( $r['anchor_text'] ?: '(empty)' ), $this->display_text( $r['target_url'] ), $r['link_location'], $r['follow_status'], $this->pdf_status_label( $r['issue_type'] ), $r['http_status'] ?: '-' ); } $pdf->table( array( 'Source', 'Anchor', 'External target', 'Location', 'Follow', 'Status', 'HTTP' ), $rows, array( 125, 100, 145, 55, 45, 45, 30 ), 5.9 ); $offset += 300; } while ( count( $chunk ) === 300 );
+        // External-link occurrence appendix.
+        $pdf->new_page();
+        $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, __( 'Bounded data appendix', 'dma-internlink-mapper' ) );
+        $pdf->heading(
+            __( 'External links', 'dma-internlink-mapper' ),
+            sprintf( /* translators: 1: PDF row limit, 2: total external-link occurrences. */ __( 'Showing up to %1$d of %2$d scanned external-link occurrences.', 'dma-internlink-mapper' ), self::PDF_APPENDIX_LIMIT, $external )
+        );
+        $last_id = 0;
+        $printed = 0;
+        do {
+            $limit = min( self::PDF_APPENDIX_BATCH, self::PDF_APPENDIX_LIMIT - $printed );
+            if ( $limit <= 0 ) { break; }
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is read in bounded primary-key batches.
+            $chunk = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_title,anchor_text,target_url,link_location,follow_status,issue_type,http_status FROM %i WHERE scan_id=%d AND id>%d AND destination_type='external' ORDER BY id ASC LIMIT %d", $l, $scan, $last_id, $limit ), ARRAY_A );
+            $rows = array();
+            foreach ( $chunk as $r ) {
+                $last_id = max( $last_id, absint( $r['id'] ) );
+                $rows[] = array( $this->display_text( $r['source_title'] ), $this->display_text( $r['anchor_text'] ?: '(empty)' ), $this->display_text( $r['target_url'] ), $r['link_location'], $r['follow_status'], $this->pdf_status_label( $r['issue_type'] ), $r['http_status'] ?: '-' );
+            }
+            if ( $rows ) { $pdf->table( array( 'Source', 'Anchor', 'External target', 'Location', 'Follow', 'Status', 'HTTP' ), $rows, array( 125, 100, 145, 55, 45, 45, 30 ), 5.9 ); }
+            $printed += count( $chunk );
+        } while ( count( $chunk ) === $limit && $printed < self::PDF_APPENDIX_LIMIT );
 
         $sections = array(
-            array( 'Orphan pages', 'Every page marked orphan in this scan.', 'orphans', array( 'Page', 'URL', 'Type', 'SEO', 'Outgoing' ), array( 185, 220, 55, 45, 50 ) ),
-            array( 'Broken internal links', 'Every internal link marked broken in this scan.', 'broken', array( 'Source', 'Anchor', 'Target', 'HTTP' ), array( 155, 120, 220, 50 ) ),
-            array( 'Redirected internal links', 'Every internal link marked redirected in this scan.', 'redirects', array( 'Source', 'Anchor', 'Target', 'Redirect target', 'HTTP' ), array( 120, 90, 135, 160, 40 ) ),
-            array( 'Weak and empty anchors', 'Every internal link marked with weak or empty anchor text.', 'weak_anchors', array( 'Source', 'Anchor', 'Target', 'Issue' ), array( 155, 110, 205, 75 ) ),
-            array( 'SEO issue log', 'Every issue stored by the completed scan.', 'issues', array( 'Issue', 'Severity', 'Message', 'Post ID' ), array( 95, 65, 335, 50 ) ),
+            array( __( 'Orphan pages', 'dma-internlink-mapper' ), $orphans, 'orphans', array( 'Page', 'URL', 'Type', 'SEO', 'Outgoing' ), array( 185, 220, 55, 45, 50 ) ),
+            array( __( 'Broken internal links', 'dma-internlink-mapper' ), $broken, 'broken', array( 'Source', 'Anchor', 'Target', 'HTTP' ), array( 155, 120, 220, 50 ) ),
+            array( __( 'Redirected internal links', 'dma-internlink-mapper' ), $redirects, 'redirects', array( 'Source', 'Anchor', 'Target', 'Redirect target', 'HTTP' ), array( 120, 90, 135, 160, 40 ) ),
+            array( __( 'Weak and empty anchors', 'dma-internlink-mapper' ), $weak, 'weak_anchors', array( 'Source', 'Anchor', 'Target', 'Issue' ), array( 155, 110, 205, 75 ) ),
+            array( __( 'SEO issue log', 'dma-internlink-mapper' ), null, 'issues', array( 'Issue', 'Severity', 'Message', 'Post ID' ), array( 95, 65, 335, 50 ) ),
         );
         foreach ( $sections as $sec ) {
             $pdf->new_page();
-            $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, 'Complete data appendix' );
-            $pdf->heading( $sec[0], $sec[1] );
+            $pdf->report_header( 'Site-wide Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, __( 'Bounded data appendix', 'dma-internlink-mapper' ) );
+            $total = null === $sec[1] ? 0 : (int) $sec[1];
+            $description = $total > 0
+                ? sprintf( /* translators: 1: PDF row limit, 2: total rows in this dataset. */ __( 'Showing up to %1$s of %2$s rows from this completed scan.', 'dma-internlink-mapper' ), number_format_i18n( self::PDF_APPENDIX_LIMIT ), number_format_i18n( $total ) )
+                : sprintf( /* translators: %s: PDF row limit. */ __( 'Showing up to %s rows from this completed scan.', 'dma-internlink-mapper' ), number_format_i18n( self::PDF_APPENDIX_LIMIT ) );
+            $pdf->heading( $sec[0], $description );
             switch ( $sec[2] ) {
                 case 'orphans':
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Read-only export; plugin table identifier is strictly allowlisted above.
-                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT title,url,post_type,seo_score,outgoing_count FROM {$p} WHERE scan_id=%d AND is_orphan=1 ORDER BY title", $scan ), ARRAY_A );
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is intentionally bounded.
+                    $all = $wpdb->get_results( $wpdb->prepare( 'SELECT title,url,post_type,seo_score,outgoing_count FROM %i WHERE scan_id=%d AND is_orphan=1 ORDER BY id ASC LIMIT %d', $p, $scan, self::PDF_APPENDIX_LIMIT ), ARRAY_A );
                     break;
                 case 'broken':
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Read-only export; plugin table identifier is strictly allowlisted above.
-                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_url,http_status FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type='broken' ORDER BY source_title", $scan ), ARRAY_A );
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is intentionally bounded.
+                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_url,http_status FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type='broken' ORDER BY id ASC LIMIT %d", $l, $scan, self::PDF_APPENDIX_LIMIT ), ARRAY_A );
                     break;
                 case 'redirects':
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Read-only export; plugin table identifier is strictly allowlisted above.
-                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_url,redirect_url,http_status FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type='redirect' ORDER BY source_title", $scan ), ARRAY_A );
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is intentionally bounded.
+                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_url,redirect_url,http_status FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type='redirect' ORDER BY id ASC LIMIT %d", $l, $scan, self::PDF_APPENDIX_LIMIT ), ARRAY_A );
                     break;
                 case 'weak_anchors':
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Read-only export; plugin table identifier is strictly allowlisted above.
-                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_title,target_url,issue_type FROM {$l} WHERE scan_id=%d AND destination_type<>'external' AND issue_type IN ('weak_anchor','empty_anchor') ORDER BY source_title", $scan ), ARRAY_A );
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is intentionally bounded.
+                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT source_title,anchor_text,target_title,target_url,issue_type FROM %i WHERE scan_id=%d AND destination_type<>'external' AND issue_type IN ('weak_anchor','empty_anchor') ORDER BY id ASC LIMIT %d", $l, $scan, self::PDF_APPENDIX_LIMIT ), ARRAY_A );
                     break;
                 case 'issues':
                 default:
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Read-only export; plugin table identifier is strictly allowlisted above.
-                    $all = $wpdb->get_results( $wpdb->prepare( "SELECT issue_type,severity,message,post_id FROM {$i} WHERE scan_id=%d ORDER BY severity DESC,id", $scan ), ARRAY_A );
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immutable completed-scan PDF data is intentionally bounded.
+                    $all = $wpdb->get_results( $wpdb->prepare( 'SELECT issue_type,severity,message,post_id FROM %i WHERE scan_id=%d ORDER BY id ASC LIMIT %d', $i, $scan, self::PDF_APPENDIX_LIMIT ), ARRAY_A );
                     break;
             }
             $rows = array();
@@ -2171,7 +2298,6 @@ class ILSM_Admin {
             if ( ! $rows ) { $rows[] = array_pad( array( 'None found' ), count( $sec[3] ), '-' ); }
             $pdf->table( $sec[3], $rows, $sec[4], 6.1 );
         }
-        // phpcs:enable
         $pdf->heading( 'Report integrity note', 'This export contains only data stored for completed scan #' . $scan . '. It does not add traffic, ranking, Core Web Vitals, mobile-friendliness, or other metrics that DMA InternLink Mapper did not measure.' );
         $pdf->output( 'dma-internlink-mapper-site-wide-' . sanitize_title( wp_parse_url( home_url(), PHP_URL_HOST ) ) . '-scan-' . $scan . '.pdf' );
     }
@@ -2186,20 +2312,28 @@ class ILSM_Admin {
         $p    = ILSM_Database::table( 'pages' );
         $l    = ILSM_Database::table( 'links' );
         $i    = ILSM_Database::table( 'issues' );
-        // phpcs:disable PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Read-only export from plugin-owned allowlisted tables.
-        $page = (array) $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$p} WHERE scan_id=%d AND post_id=%d", $scan, $post_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $page = (array) $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE scan_id=%d AND post_id=%d', $p, $scan, $post_id ), ARRAY_A );
         if ( ! $page ) { wp_die( esc_html__( 'The selected page is not present in the latest completed scan.', 'dma-internlink-mapper' ) ); }
-        $incoming = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,source_title,anchor_text,source_url,link_location,follow_status,issue_type,http_status FROM {$l} WHERE scan_id=%d AND target_post_id=%d AND destination_type<>'external' ORDER BY source_title,id", $scan, $post_id ), ARRAY_A );
-        $outgoing = $wpdb->get_results( $wpdb->prepare( "SELECT target_post_id,target_title,anchor_text,target_url,destination_type,link_location,follow_status,issue_type,http_status FROM {$l} WHERE scan_id=%d AND source_post_id=%d ORDER BY destination_type,target_title,id", $scan, $post_id ), ARRAY_A );
-        $issues   = $wpdb->get_results( $wpdb->prepare( "SELECT issue_type,severity,message FROM {$i} WHERE scan_id=%d AND post_id=%d ORDER BY severity DESC,id", $scan, $post_id ), ARRAY_A );
-        $neighbors = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$p} WHERE scan_id=%d AND post_id IN (SELECT source_post_id FROM {$l} WHERE scan_id=%d AND target_post_id=%d UNION SELECT target_post_id FROM {$l} WHERE scan_id=%d AND source_post_id=%d) ORDER BY incoming_count DESC LIMIT 80", $scan, $scan, $post_id, $scan, $post_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $incoming = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,source_title,anchor_text,source_url,link_location,follow_status,issue_type,http_status FROM %i WHERE scan_id=%d AND target_post_id=%d AND destination_type<>'external' ORDER BY source_title,id", $l, $scan, $post_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $outgoing = $wpdb->get_results( $wpdb->prepare( 'SELECT target_post_id,target_title,anchor_text,target_url,destination_type,link_location,follow_status,issue_type,http_status FROM %i WHERE scan_id=%d AND source_post_id=%d ORDER BY destination_type,target_title,id', $l, $scan, $post_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $issues   = $wpdb->get_results( $wpdb->prepare( 'SELECT issue_type,severity,message FROM %i WHERE scan_id=%d AND post_id=%d ORDER BY severity DESC,id', $i, $scan, $post_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $neighbors = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE scan_id=%d AND post_id IN (SELECT source_post_id FROM %i WHERE scan_id=%d AND target_post_id=%d UNION SELECT target_post_id FROM %i WHERE scan_id=%d AND source_post_id=%d) ORDER BY incoming_count DESC LIMIT 80', $p, $scan, $l, $scan, $post_id, $l, $scan, $post_id ), ARRAY_A );
         $graph_nodes = array_merge( array( $page ), $neighbors );
-        $graph_edges = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,target_post_id FROM {$l} WHERE scan_id=%d AND (source_post_id=%d OR target_post_id=%d) AND destination_type<>'external'", $scan, $post_id, $post_id ), ARRAY_A );
-        $total_pages = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$p} WHERE scan_id=%d", $scan ) );
-        $total_internal = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type<>'external'", $scan ) );
-        $total_external = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$l} WHERE scan_id=%d AND destination_type='external'", $scan ) );
-        $total_orphans = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$p} WHERE scan_id=%d AND is_orphan=1", $scan ) );
-        // phpcs:enable
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $graph_edges = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,target_post_id FROM %i WHERE scan_id=%d AND (source_post_id=%d OR target_post_id=%d) AND destination_type<>'external'", $l, $scan, $post_id, $post_id ), ARRAY_A );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $total_pages = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d", $p, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $total_internal = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type<>'external'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $total_external = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND destination_type='external'", $l, $scan ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Current plugin-owned report data is read or maintained directly; caching would risk stale admin results.
+        $total_orphans = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM %i WHERE scan_id=%d AND is_orphan=1", $p, $scan ) );
 
         $external_count = 0; $external_broken = 0; $internal_out = 0; $out_broken = 0; $out_redirect = 0;
         foreach ( $outgoing as $r ) {
@@ -2235,7 +2369,7 @@ class ILSM_Admin {
         $pdf->rounded_rect( 420, 536, 151, 101, 8, array( 255, 255, 255 ), array( 226, 232, 240 ) );
         $pdf->set_color( 79, 70, 229 ); $pdf->text( 430, 620, 'BRAIN SIGNALS', 8.6, true );
         $pdf->set_color( 15, 23, 42 ); $pdf->text( 430, 595, 'Indexed pages', 7.1 ); $pdf->text( 546, 595, number_format_i18n( $total_pages ), 7.1, true );
-        $pdf->text( 430, 573, 'Orphan pages', 7.1 ); $pdf->text( 546, 573, number_format_i18n( $total_orphans ), 7.1, true );
+        $pdf->text( 430, 573, __( 'Orphan pages', 'dma-internlink-mapper' ), 7.1 ); $pdf->text( 546, 573, number_format_i18n( $total_orphans ), 7.1, true );
         $pdf->text( 430, 551, 'Architecture health', 7.1 ); $pdf->text( 536, 551, $architecture_score . '/100', 7.1, true );
 
         $pdf->rounded_rect( 420, 295, 151, 229, 8, array( 255, 255, 255 ), array( 226, 232, 240 ) );
@@ -2299,7 +2433,7 @@ class ILSM_Admin {
         foreach ( array_slice( $issues, 0, 6 ) as $issue ) { $pdf->filled_circle( 34, $yy + 2, 3, 'high' === strtolower( $issue['severity'] ) ? 239 : 249, 'high' === strtolower( $issue['severity'] ) ? 68 : 115, 'high' === strtolower( $issue['severity'] ) ? 68 : 22 ); $pdf->set_color( 15, 23, 42 ); $pdf->text( 44, $yy, $this->display_text( $issue['issue_type'] ), 6.4, true ); $pdf->set_color( 71, 85, 105 ); $pdf->text( 122, $yy, $this->display_text( $issue['message'] ), 6.2 ); $yy -= 18; }
 
         $pdf->set_y( 248 );
-        $pdf->heading( 'Report appendices', 'The following pages print the complete selected-page relationships and issue log.' );
+        $pdf->heading( __( 'Report appendices', 'dma-internlink-mapper' ), 'The following pages print the complete selected-page relationships and issue log.' );
 
         $pdf->new_page(); $pdf->report_header( 'Selected Page Report', $ctx['site_url'], 'Scan: Completed Scan #' . $scan, 'Complete page relationships' );
         $pdf->heading( 'All incoming internal links', 'Every scanned internal-link occurrence pointing to the selected page.' );

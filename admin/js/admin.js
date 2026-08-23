@@ -620,6 +620,7 @@ jQuery(function($){
         var $button = $(this);
         var $progress = $('#ilsm-opportunity-progress');
         var offset = 0;
+        var cursor = 0;
         var created = 0;
         var checked = 0;
         var startedAt = Date.now();
@@ -662,7 +663,7 @@ jQuery(function($){
             $('#ilsm-opportunity-candidates').text(checked.toLocaleString());
             $('#ilsm-opportunity-found').text(created.toLocaleString());
             $('#ilsm-opportunity-elapsed').text(elapsedText());
-            $('#ilsm-opportunity-stage').text(data.done ? 'Opportunity index is ready.' : (percent < 10 ? 'Reading eligible page content…' : (percent < 35 ? 'Checking anchor relevance…' : (percent < 70 ? 'Verifying existing links and confidence…' : 'Running final insertion-safety checks…'))));
+            $('#ilsm-opportunity-stage').text(data.done ? 'Opportunity index is ready.' : (percent < 10 ? 'Reading eligible page content…' : (percent < 35 ? 'Checking contextual relevance…' : (percent < 70 ? 'Ranking graph, keyword ownership and Search Console evidence…' : 'Running final insertion-safety checks…'))));
             $discovery.attr('data-stage', stage);
             $discovery.find('[data-opportunity-step]').each(function(){
                 var step = parseInt($(this).attr('data-opportunity-step') || 0, 10);
@@ -685,6 +686,7 @@ jQuery(function($){
                 action: 'ilsm_generate_opportunities',
                 nonce: ILSM.nonce,
                 offset: offset,
+                cursor: cursor,
                 batch: 6
             }).done(function(response){
                 if(!response || !response.success){
@@ -700,6 +702,7 @@ jQuery(function($){
                 }
                 var data = response.data || {};
                 offset = parseInt(data.offset || 0, 10);
+                cursor = parseInt(data.cursor || cursor, 10);
                 created += parseInt(data.created || 0, 10);
                 checked += parseInt(data.checked || 0, 10);
                 updateDiscovery(data);
@@ -760,6 +763,9 @@ jQuery(function($){
     function escapeText(value){
         return $('<div>').text(value == null ? '' : String(value)).html();
     }
+    function escapeAttr(value){
+        return escapeText(value).replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
 
     function renderTargetRows(rows, append){
         var $body = $('#ilsm-target-results');
@@ -769,12 +775,14 @@ jQuery(function($){
             var linked = manual ? '<span class="ilsm-badge is-warning">'+esc(ilsmT('manualEdit','Manual edit'))+'</span>' : (row.already_linked ? '<span class="ilsm-badge is-neutral">'+esc(ilsmT('alreadyLinked','Already linked'))+'</span>' : '<span class="ilsm-badge is-success">'+esc(ilsmT('readyAnchor','Ready anchor'))+'</span>');
             var editUrl = String(row.source_edit_url || '#');
             var signal = manual ? ilsmT('phraseNotPresent','Suggested phrase — not currently present') : String(row.signal || 'match').replace(/_/g, ' ');
+            var scoreDetail = (!manual && row.contextual_score != null) ? '<small class="ilsm-score-breakdown">Context ' + parseInt(row.contextual_score || 0, 10) + ' · Strategy ' + parseInt(row.strategy_score || 50, 10) + '</small>' : '';
+            var scoreReason = Array.isArray(row.strategy_signals) ? row.strategy_signals.join(' ') : '';
             $body.append(
                 '<tr>' +
                 '<td><strong>' + escapeText(row.source_title) + '</strong><small class="ilsm-row-url">' + escapeText(row.source_type) + '</small></td>' +
                 '<td><span class="ilsm-anchor-chip">' + escapeText(row.anchor) + '</span><small class="ilsm-signal-label">' + escapeText(signal) + '</small></td>' +
                 '<td><p class="ilsm-opportunity-context">' + escapeText(row.context) + '</p></td>' +
-                '<td><span class="ilsm-confidence">' + parseInt(row.score || 0, 10) + '%</span></td>' +
+                '<td><span class="ilsm-confidence" title="' + escapeAttr(scoreReason) + '">' + parseInt(row.score || 0, 10) + '%</span>' + scoreDetail + '</td>' +
                 '<td>' + linked + '</td>' +
                 '<td><a class="ilsm-btn ilsm-btn-small ilsm-btn-primary" href="' + escapeText(editUrl) + '">Open source</a></td>' +
                 '</tr>'
@@ -808,6 +816,7 @@ jQuery(function($){
         }
 
         var offset = 0;
+        var cursor = 0;
         var found = 0;
         var first = true;
         var allRows = [];
@@ -826,6 +835,7 @@ jQuery(function($){
                 post_type: $('#ilsm-target-source-type').val() || '',
                 include_linked: $('#ilsm-target-include-linked').is(':checked') ? 1 : 0,
                 offset: offset,
+                cursor: cursor,
                 batch: 20
             }).done(function(response){
                 if(!response || !response.success){
@@ -841,6 +851,7 @@ jQuery(function($){
                 first = false;
                 found = allRows.length;
                 offset = parseInt(data.offset || offset, 10);
+                cursor = parseInt(data.cursor || cursor, 10);
                 $progress.text((parseInt(data.percent || 0, 10)) + '% searched · ' + found + ' matches');
                 $('#ilsm-target-result-summary').text(ilsmFmtN('destinationSummary','Destination: %1$s · %2$s · Keyword: %3$s',[data.target_title||'',data.target_url||'',data.keyword||keyword]));
                 if(!data.done){
@@ -945,7 +956,9 @@ jQuery(function($){
     function locationText(item){var value=item.content_location;if(value===null||typeof value==='undefined'||value===''){return item.editor_type==='elementor'?'Elementor text widget':'Post content';}if(typeof value==='object'){try{return JSON.stringify(value);}catch(e){return 'Editor content';}}return String(value);}
     function previewHtml(item){
         var warnings=(item.warnings||[]).map(function(w){return '<li>'+escapeText(w)+'</li>';}).join('');
-        return '<article class="ilsm-preview-item" data-preview-id="'+parseInt(item.opportunity_id,10)+'"><div class="ilsm-preview-grid"><p><strong>Source:</strong> '+escapeText(item.source_title)+'</p><p><strong>Anchor:</strong> '+escapeText(item.anchor)+'</p><p><strong>Destination:</strong> '+escapeText(item.target_title)+'</p><p><strong>Insert location:</strong> '+escapeText(locationText(item))+'</p><p><strong>Editor:</strong> '+escapeText(item.editor_type)+'</p><p><strong>Confidence:</strong> '+parseInt(item.score||0,10)+'% <span class="ilsm-required-confidence">(required: '+parseInt(item.minimum_confidence||0,10)+'%)</span></p></div><div class="ilsm-preview-paragraph">'+String(item.paragraph_html||'')+'</div>'+(item.insertable===false?'<div class="ilsm-preview-ineligible" role="status"><strong>Not currently insertable.</strong> '+escapeText(item.reason_message||'This opportunity no longer passes validation.')+'</div>':'')+(warnings?'<ul class="ilsm-preview-warnings">'+warnings+'</ul>':'')+'<div class="ilsm-result-actions">'+linkButton(item.source_edit_url,'Edit source')+linkButton(item.source_view_url,'View source')+linkButton(item.destination_url,'Open destination')+'</div></article>';
+        var scoreBreakdown = item.contextual_score != null ? ' <span class="ilsm-required-confidence">· context '+parseInt(item.contextual_score||0,10)+' · strategy '+parseInt(item.strategy_score||50,10)+'</span>' : '';
+        var scoreReason = item.score_reason ? '<p class="ilsm-preview-score-reason">'+escapeText(item.score_reason)+'</p>' : '';
+        return '<article class="ilsm-preview-item" data-preview-id="'+parseInt(item.opportunity_id,10)+'"><div class="ilsm-preview-grid"><p><strong>Source:</strong> '+escapeText(item.source_title)+'</p><p><strong>Anchor:</strong> '+escapeText(item.anchor)+'</p><p><strong>Destination:</strong> '+escapeText(item.target_title)+'</p><p><strong>Insert location:</strong> '+escapeText(locationText(item))+'</p><p><strong>Editor:</strong> '+escapeText(item.editor_type)+'</p><p><strong>Confidence:</strong> '+parseInt(item.score||0,10)+'% <span class="ilsm-required-confidence">(required: '+parseInt(item.minimum_confidence||0,10)+'%)</span>'+scoreBreakdown+'</p></div>'+scoreReason+'<div class="ilsm-preview-paragraph">'+String(item.paragraph_html||'')+'</div>'+(item.insertable===false?'<div class="ilsm-preview-ineligible" role="status"><strong>Not currently insertable.</strong> '+escapeText(item.reason_message||'This opportunity no longer passes validation.')+'</div>':'')+(warnings?'<ul class="ilsm-preview-warnings">'+warnings+'</ul>':'')+'<div class="ilsm-result-actions">'+linkButton(item.source_edit_url,'Edit source')+linkButton(item.source_view_url,'View source')+linkButton(item.destination_url,'Open destination')+'</div></article>';
     }
     function responseError(xhr,fallback){var data=xhr&&xhr.responseJSON&&xhr.responseJSON.data;return data&&data.message?String(data.message):fallback;}
     function previewModeNotice(){
@@ -953,7 +966,29 @@ jQuery(function($){
         var enableButton=ILSM.canManageSettings?'<button type="button" class="ilsm-btn ilsm-btn-primary ilsm-enable-live-from-result">Enable Live Mode</button>':'';
         return '<aside class="ilsm-preview-mode-help" role="note"><div class="ilsm-preview-mode-help-icon" aria-hidden="true">i</div><div class="ilsm-preview-mode-help-content"><strong>Preview Mode is enabled</strong><p>No post content was changed. To write approved links, open <strong>Settings → Safe Link Insertion</strong>, clear <strong>Preview Mode</strong>, save the settings, then run Insert Selected Links again.</p><div class="ilsm-preview-mode-help-actions">'+enableButton+'<a class="ilsm-btn" href="'+escapeText(settingsUrl)+'">Open insertion settings</a></div></div></aside>';
     }
-    function loadPreviews(ids,then,onProgress){if(typeof onProgress==='function'){onProgress(0,ids.length);}request('ilsm_opportunity_bulk_preview',{ids:ids},60000).done(function(r){if(r&&r.success){if(typeof onProgress==='function'){onProgress(parseInt(r.data.checked||ids.length,10),ids.length);}then({items:r.data.items||[],failures:r.data.failures||[]});return;}then({items:[],failures:[{id:0,message:(r&&r.data&&r.data.message)||ilsmT('safetyPreviewFailed','Safety preview failed.')}]});}).fail(function(xhr,status){then({items:[],failures:[{id:0,message:responseError(xhr,status==='timeout'?ilsmT('safetyPreviewTimeout','Safety preview timed out after 60 seconds.'):ilsmT('safetyPreviewFailed','Safety preview failed.'))} ]});});}
+    function loadPreviews(ids,then,onProgress){
+        ids=(ids||[]).map(function(id){return parseInt(id,10)||0;}).filter(Boolean);
+        if(typeof onProgress==='function'){onProgress(0,ids.length);}
+        request('ilsm_opportunity_bulk_preview',{ids:ids},60000).done(function(r){
+            if(r&&r.success){
+                var items=r.data&&r.data.items?r.data.items:[],failures=r.data&&r.data.failures?r.data.failures:[],seen={};
+                items.forEach(function(item){seen[parseInt(item.opportunity_id,10)||0]=true;});
+                failures.forEach(function(item){seen[parseInt(item.id,10)||0]=true;});
+                ids.forEach(function(id){
+                    if(!seen[id]){failures.push({id:id,status:'failed',code:'preview_result_missing',message:ilsmT('safetyPreviewIncomplete','The server did not return a safety result for this selected opportunity. Nothing was changed.')});}
+                });
+                var covered=items.length+failures.length;
+                if(typeof onProgress==='function'){onProgress(Math.min(covered,ids.length),ids.length);}
+                then({items:items,failures:failures,runToken:String((r.data&&r.data.run_token)||'')});
+                return;
+            }
+            var messageText=(r&&r.data&&r.data.message)||ilsmT('safetyPreviewFailed','Safety preview failed.');
+            then({items:[],failures:ids.map(function(id){return {id:id,status:'failed',code:(r&&r.data&&r.data.code)||'preview_failed',message:messageText};}),runToken:''});
+        }).fail(function(xhr,status){
+            var messageText=responseError(xhr,status==='timeout'?ilsmT('safetyPreviewTimeout','Safety preview timed out after 60 seconds.'):ilsmT('safetyPreviewFailed','Safety preview failed.'));
+            then({items:[],failures:ids.map(function(id){return {id:id,status:'failed',code:'preview_request_failed',message:messageText};}),runToken:''});
+        });
+    }
     function failureHtml(failures){if(!failures.length){return '';}return '<div class="ilsm-preview-skipped"><strong>'+failures.length+' could not be prepared</strong><ul>'+failures.map(function(f){return '<li><strong>#'+parseInt(f.id,10)+'</strong>: '+escapeText(f.message)+' <code>'+escapeText(f.code||'preview_failed')+'</code></li>';}).join('')+'</ul></div>';}
     function resultHtml(results){var inserted=0,previewed=0,skipped=0,failed=0;results.forEach(function(r){if(r.status==='inserted'){inserted++;}else if(r.status==='dry_run_passed'){previewed++;}else if(r.status==='skipped'){skipped++;}else{failed++;}});var summary=isDryRun?(previewed+' previewed · '+skipped+' skipped · '+failed+' failed'):(inserted+' inserted · '+skipped+' skipped · '+failed+' failed');var heading=isDryRun?'Preview results':'Link insertion results';return '<div class="ilsm-insert-summary"><h3>'+heading+'</h3><p><strong>'+summary+'</strong></p>'+(isDryRun?previewModeNotice():'')+results.map(function(r){var cls=(r.status==='inserted'||r.status==='dry_run_passed')?'is-success':(r.status==='skipped'?'is-warning':'is-error'),icon=cls==='is-success'?'✓':(cls==='is-warning'?'!':'×');return '<article class="ilsm-insert-result '+cls+'"><span class="ilsm-result-icon" aria-hidden="true">'+icon+'</span><div class="ilsm-result-content"><p class="ilsm-result-route"><strong>'+escapeText(r.source_title||('Opportunity #'+r.id))+'</strong><span class="ilsm-route-arrow" aria-hidden="true">→</span><span>'+escapeText(r.target_title||'Destination')+'</span></p><p class="ilsm-result-anchor">Anchor: <span class="ilsm-anchor-chip">'+escapeText(r.anchor||'')+'</span></p><p class="ilsm-result-message"><strong>'+escapeText(r.label)+'</strong>: '+escapeText(r.message||'No details returned.')+'</p><div class="ilsm-result-actions">'+linkButton(r.source_edit_url,r.status==='inserted'?'Edit where added':'Edit source')+linkButton(r.source_view_url,'View source page')+linkButton(r.destination_url,'Open destination')+'</div></div></article>';}).join('')+'</div>';}
     $(document).off('click.ilsmOpportunityPreview','.ilsm-preview-opportunity,.ilsm-insert-opportunity').on('click.ilsmOpportunityPreview','.ilsm-preview-opportunity,.ilsm-insert-opportunity',function(event){
@@ -985,8 +1020,94 @@ jQuery(function($){
     $('#ilsm-select-all-opportunities').on('change',function(){$('.ilsm-opportunity-check:not(:disabled)').prop('checked',this.checked);});
     function bulkStatusHtml(ids){return '<div class="ilsm-live-bulk"><p class="ilsm-live-progress" aria-live="polite"><strong>Checking selected opportunities 0 / '+ids.length+'…</strong></p><div class="ilsm-live-results">'+ids.map(function(id){var row=rowFor(id),source=row.find('td').eq(1).text().trim()||('Opportunity #'+id),anchor=row.find('td').eq(2).text().trim();return '<article class="ilsm-live-row is-pending" data-live-id="'+id+'"><span class="ilsm-live-icon" aria-hidden="true">…</span><div><strong>'+escapeText(source)+'</strong><br><small>'+escapeText(anchor)+'</small><p class="ilsm-live-message">Waiting for safety check…</p><div class="ilsm-result-actions"></div></div></article>';}).join('')+'</div></div>';}
     function updateLive(id,status,text,preview){var $item=$('.ilsm-live-row[data-live-id="'+parseInt(id,10)+'"]'),icons={checking:'↻',inserting:'↻',inserted:'✓',dry_run_passed:'✓',skipped:'!',failed:'×'},labels={checking:'Checking…',inserting:isDryRun?'Testing…':'Inserting…',inserted:'Inserted',dry_run_passed:'Preview passed',skipped:'Skipped',failed:'Failed'};$item.removeClass('is-pending is-checking is-inserting is-inserted is-skipped is-failed').addClass('is-'+status);$item.find('.ilsm-live-icon').text(icons[status]||'•');$item.find('.ilsm-live-message').html('<strong>'+escapeText(labels[status]||status)+'</strong>'+ (text?': '+escapeText(text):''));if(preview){$item.find('.ilsm-result-actions').html(linkButton(preview.source_edit_url,isDryRun?'Edit source':'Edit where added')+linkButton(preview.source_view_url,'View source')+linkButton(preview.destination_url,'Open destination'));}}
-    function runAutomaticInsert(items,failures,total){previewById={};items.forEach(function(item){previewById[parseInt(item.opportunity_id,10)]=item;});var initialSkipped=0,initialFailed=0;(failures||[]).forEach(function(f){var state=f.status==='skipped'?'skipped':'failed';if(state==='skipped'){initialSkipped++;}else{initialFailed++;}updateLive(f.id,state,f.message||ilsmT('safetyPreviewFailed','Safety preview failed.'));removeProcessedRow(f.id);});var queue=items.slice(),processed=(failures||[]).length,inserted=0,skipped=initialSkipped,failed=initialFailed;function finish(){var successLabel=isDryRun?'Preview passed':'Inserted',summary=isDryRun?(inserted+' previews passed · '+skipped+' skipped · '+failed+' failed'):(inserted+' inserted · '+skipped+' skipped · '+failed+' failed'),verified=failed===0;$('.ilsm-live-progress').replaceWith('<div class="ilsm-live-summary-grid"><div class="is-success"><span>✓</span><strong>'+inserted+'</strong><small>'+successLabel+'</small></div><div class="is-neutral"><span>−</span><strong>'+skipped+'</strong><small>Skipped</small></div><div class="is-error"><span>×</span><strong>'+failed+'</strong><small>Failed</small></div><div class="is-verified"><span>♢</span><strong>'+(verified?'All links verified':'Review required')+'</strong><small>Source, anchor & destination</small></div></div>');var modalTitle,modalDescription;if(isDryRun){modalTitle=failed?'Preview completed with issues':'Internal-link preview complete';modalDescription='The selected opportunities were checked without changing content.';}else if(failed&&inserted){modalTitle='Insertion completed with errors';modalDescription='Successful links moved to Live history. Failed attempts moved to Errors.';}else if(failed&&!inserted){modalTitle='Internal-link insertion failed';modalDescription='Failed attempts moved to Errors history with their real reason.';}else if(skipped&&inserted){modalTitle='Internal links partially inserted';modalDescription='Successful links moved to Live history. Skipped attempts are available for review.';}else{modalTitle='Internal links inserted';modalDescription='The links are now live and appear in Live history.';}$('#ilsm-insert-modal-title').text(modalTitle);$('.ilsm-modal-titlebar p').text(modalDescription);$('#ilsm-insert-modal').attr('data-result-state',failed?'error':(skipped?'warning':'success'));message('Finished: '+summary,failed>0);$('#ilsm-select-all-opportunities').prop('checked',false);loadHistory(1,false);$('[data-ilsm-close],.ilsm-modal-close').prop('disabled',false);$('[data-ilsm-close]').text(ilsmT('close','Close'));$('#ilsm-confirm-insert,#ilsm-confirm-insert-button').hide();}function next(){if(!queue.length){finish();return;}var item=queue.shift(),id=parseInt(item.opportunity_id,10);updateLive(id,'inserting','',item);request('ilsm_opportunity_insert_fresh',{id:id},45000).done(function(r){var data=r&&r.data?r.data:{},status=r&&r.success?(data.status||'inserted'):'failed';if(status==='inserted'){inserted++;updateLive(id,'inserted',data.message||'The link is now live. It was inserted, saved, and verified successfully.',data);removeProcessedRow(id);}else if(status==='dry_run_passed'){inserted++;updateLive(id,'dry_run_passed',data.message||'Preview passed. No content was changed.',data);}else if(status==='skipped'){skipped++;updateLive(id,'skipped',data.message||'No content was changed.',data);removeProcessedRow(id);}else{failed++;updateLive(id,'failed',data.message||'Insertion failed.',data);removeProcessedRow(id);}processed++;$('.ilsm-live-progress strong').text((isDryRun?'Testing':'Inserting')+' links '+processed+' / '+total+'…');next();}).fail(function(xhr,status){failed++;processed++;updateLive(id,'failed',responseError(xhr,status==='timeout'?'The insertion timed out. Check the source page before retrying.':'The insertion request failed.'),item);$('.ilsm-live-progress strong').text((isDryRun?'Testing':'Inserting')+' links '+processed+' / '+total+'…');next();});}next();}
-    function startBulkInsertion(requested){$('#ilsm-insert-preview').html(bulkStatusHtml(requested)+(isDryRun?previewModeNotice():''));$('#ilsm-confirm-insert,#ilsm-confirm-insert-button').hide();$('[data-ilsm-close],.ilsm-modal-close').prop('disabled',true);modal(true);message(ilsmFmtN('checkingSelected','Checking selected opportunities %1$s / %2$s…',[0,requested.length]),false);requested.forEach(function(id){updateLive(id,'checking',ilsmT('safetyPreviewProgress','Safety preview in progress.'));});loadPreviews(requested,function(result){var items=result.items||[],failures=result.failures||[];items.filter(function(item){return item.insertable===false;}).forEach(function(item){failures.push({id:item.opportunity_id,message:item.reason_message||ilsmT('notCurrentlyInsertable','This opportunity is not currently insertable.'),code:item.reason_code||'not_insertable'});});items=items.filter(function(item){return item.insertable!==false&&item.snapshot_token;});var checked=items.length+failures.length;$('.ilsm-live-progress strong').text(ilsmFmtN('safetyCheckCompleteAction','Safety check complete %1$s / %2$s. %3$s verified links…',[checked,requested.length,isDryRun?ilsmT('testing','Testing…').replace('…',''):ilsmT('inserting','Inserting…').replace('…','')]));message(ilsmFmtN('safetyCheckComplete','Safety check complete %1$s / %2$s.',[checked,requested.length]),false);runAutomaticInsert(items,failures,requested.length);},function(done,total){$('.ilsm-live-progress strong').text(ilsmFmtN('checkingSelected','Checking selected opportunities %1$s / %2$s…',[done,total]));message(ilsmFmtN('checkingSelected','Checking selected opportunities %1$s / %2$s…',[done,total]),false);});}
+    function runAutomaticInsert(items,failures,total,runToken){
+        previewById={};
+        items.forEach(function(item){previewById[parseInt(item.opportunity_id,10)]=item;});
+        var initialSkipped=0,initialFailed=0;
+        (failures||[]).forEach(function(f){
+            var state=f.status==='skipped'?'skipped':'failed';
+            if(state==='skipped'){initialSkipped++;}else{initialFailed++;}
+            updateLive(f.id,state,f.message||ilsmT('safetyPreviewFailed','Safety preview failed.'));
+            removeProcessedRow(f.id);
+        });
+        var queue=items.slice(),processed=(failures||[]).length,inserted=0,skipped=initialSkipped,failed=initialFailed;
+        var batchSize=Math.max(1,Math.min(20,parseInt(ILSM.insertBatchSize||5,10)||5)),sinceYield=0;
+        function finish(){
+            var successLabel=isDryRun?'Preview passed':'Inserted';
+            var summary=isDryRun?(inserted+' previews passed · '+skipped+' skipped · '+failed+' failed'):(inserted+' inserted · '+skipped+' skipped · '+failed+' failed');
+            var verified=failed===0&&skipped===0&&processed===total;
+            $('.ilsm-live-progress').replaceWith('<div class="ilsm-live-summary-grid"><div class="is-success"><span>✓</span><strong>'+inserted+'</strong><small>'+successLabel+'</small></div><div class="is-neutral"><span>−</span><strong>'+skipped+'</strong><small>Skipped</small></div><div class="is-error"><span>×</span><strong>'+failed+'</strong><small>Failed</small></div><div class="is-verified"><span>♢</span><strong>'+(verified?'All selected links verified':'Review required')+'</strong><small>Source, anchor & destination</small></div></div>');
+            var modalTitle,modalDescription;
+            if(isDryRun){modalTitle=failed?'Preview completed with issues':'Internal-link preview complete';modalDescription='The selected opportunities were checked without changing content.';}
+            else if(failed&&inserted){modalTitle='Insertion completed with errors';modalDescription='Successful links moved to Live history. Failed attempts moved to Errors.';}
+            else if(failed&&!inserted){modalTitle='Internal-link insertion failed';modalDescription='Failed attempts moved to Errors history with their real reason.';}
+            else if(skipped&&inserted){modalTitle='Internal links partially inserted';modalDescription='Successful links moved to Live history. Skipped attempts are available for review.';}
+            else if(skipped&&!inserted){modalTitle='No links were inserted';modalDescription='The selected opportunities were checked but skipped by the current safety limits.';}
+            else{modalTitle='Internal links inserted';modalDescription='The links are now live and appear in Live history.';}
+            $('#ilsm-insert-modal-title').text(modalTitle);
+            $('.ilsm-modal-titlebar p').text(modalDescription);
+            $('#ilsm-insert-modal').attr('data-result-state',failed?'error':(skipped?'warning':'success'));
+            message('Finished: '+summary,failed>0);
+            $('#ilsm-select-all-opportunities').prop('checked',false);
+            loadHistory(1,false);
+            $('[data-ilsm-close],.ilsm-modal-close').prop('disabled',false);
+            $('[data-ilsm-close]').text(ilsmT('close','Close'));
+            $('#ilsm-confirm-insert,#ilsm-confirm-insert-button').hide();
+        }
+        function continueQueue(){
+            sinceYield++;
+            if(sinceYield>=batchSize){sinceYield=0;window.setTimeout(next,0);}else{next();}
+        }
+        function next(){
+            if(!queue.length){finish();return;}
+            var item=queue.shift(),id=parseInt(item.opportunity_id,10);
+            updateLive(id,'inserting','',item);
+            request('ilsm_opportunity_insert_fresh',{id:id,run_token:String(runToken||'')},45000).done(function(r){
+                var data=r&&r.data?r.data:{},status=r&&r.success?(data.status||'inserted'):'failed';
+                if(status==='inserted'){inserted++;updateLive(id,'inserted',data.message||'The link is now live. It was inserted, saved, and verified successfully.',data);removeProcessedRow(id);}
+                else if(status==='dry_run_passed'){inserted++;updateLive(id,'dry_run_passed',data.message||'Preview passed. No content was changed.',data);}
+                else if(status==='skipped'){skipped++;updateLive(id,'skipped',data.message||'No content was changed.',data);removeProcessedRow(id);}
+                else{failed++;updateLive(id,'failed',data.message||'Insertion failed.',data);removeProcessedRow(id);}
+                processed++;
+                $('.ilsm-live-progress strong').text((isDryRun?'Testing':'Inserting')+' links '+processed+' / '+total+'…');
+                continueQueue();
+            }).fail(function(xhr,status){
+                failed++;processed++;
+                updateLive(id,'failed',responseError(xhr,status==='timeout'?'The insertion timed out. Check the source page before retrying.':'The insertion request failed.'),item);
+                $('.ilsm-live-progress strong').text((isDryRun?'Testing':'Inserting')+' links '+processed+' / '+total+'…');
+                continueQueue();
+            });
+        }
+        next();
+    }
+    function startBulkInsertion(requested){
+        $('#ilsm-insert-preview').html(bulkStatusHtml(requested)+(isDryRun?previewModeNotice():''));
+        $('#ilsm-confirm-insert,#ilsm-confirm-insert-button').hide();
+        $('[data-ilsm-close],.ilsm-modal-close').prop('disabled',true);
+        modal(true);
+        message(ilsmFmtN('checkingSelected','Checking selected opportunities %1$s / %2$s…',[0,requested.length]),false);
+        requested.forEach(function(id){updateLive(id,'checking',ilsmT('safetyPreviewProgress','Safety preview in progress.'));});
+        loadPreviews(requested,function(result){
+            var items=result.items||[],failures=result.failures||[],runToken=String(result.runToken||'');
+            items.filter(function(item){return item.insertable===false;}).forEach(function(item){
+                failures.push({id:item.opportunity_id,message:item.reason_message||ilsmT('notCurrentlyInsertable','This opportunity is not currently insertable.'),code:item.reason_code||'not_insertable'});
+            });
+            items=items.filter(function(item){return item.insertable!==false&&item.snapshot_token;});
+            if(items.length&&!runToken){
+                items.forEach(function(item){
+                    failures.push({id:item.opportunity_id,status:'failed',code:'bulk_run_token_missing',message:ilsmT('safetyPreviewIncomplete','The server did not return a complete reviewed-run state. Nothing was changed.')});
+                });
+                items=[];
+            }
+            var checked=items.length+failures.length;
+            $('.ilsm-live-progress strong').text(ilsmFmtN('safetyCheckCompleteAction','Safety check complete %1$s / %2$s. %3$s verified links…',[checked,requested.length,isDryRun?ilsmT('testing','Testing…').replace('…',''):ilsmT('inserting','Inserting…').replace('…','')]));
+            message(ilsmFmtN('safetyCheckComplete','Safety check complete %1$s / %2$s.',[checked,requested.length]),false);
+            runAutomaticInsert(items,failures,requested.length,runToken);
+        },function(done,total){
+            $('.ilsm-live-progress strong').text(ilsmFmtN('checkingSelected','Checking selected opportunities %1$s / %2$s…',[done,total]));
+            message(ilsmFmtN('checkingSelected','Checking selected opportunities %1$s / %2$s…',[done,total]),false);
+        });
+    }
     $('#ilsm-insert-selected').on('click',function(){var requested=$('.ilsm-opportunity-check:checked').map(function(){return parseInt($(this).closest('tr').data('opportunity-id'),10);}).get();if(!requested.length){message(ilsmT('selectEligible','Select at least one eligible opportunity.'),true);return;}if(isDryRun){if(!window.confirm(ilsmT('previewLiveConfirm','Preview Mode is active, so no links will be added. Switch to Live Mode and write the selected links into content now? A WordPress revision will be created when enabled in Settings.'))){startBulkInsertion(requested);return;}message(ilsmT('enablingLiveMode','Enabling Live Mode…'),false);request('ilsm_enable_live_insertion',{},15000).done(function(r){if(!r||!r.success){message((r&&r.data&&r.data.message)||ilsmT('liveModeEnableFailed','Live Mode could not be enabled.'),true);return;}isDryRun=false;$('.ilsm-mode-badge').removeClass('is-dry-run').addClass('is-live').text(ilsmT('liveModeBadge','Live Mode: links are written to content'));message(ilsmT('liveModeStarting','Live Mode enabled. Starting selected links…'),false);startBulkInsertion(requested);}).fail(function(xhr,status){message(responseError(xhr,status==='timeout'?ilsmT('liveModeTimeout','Enabling Live Mode timed out.'):ilsmT('liveModeEnableFailed','Live Mode could not be enabled.')),true);});return;}startBulkInsertion(requested);});
     $('#ilsm-confirm-insert').on('change',function(){$('#ilsm-confirm-insert-button').prop('disabled',!this.checked);});
     function prependHistory(history){if(history){loadHistory(1,false);}}

@@ -181,23 +181,21 @@
     }
 
     function editableTextKeys(block){
-        var attrs=block.attributes||{}, keys=[], seen={};
-        var preferred=['content','text','description','value','editor'];
-        preferred.forEach(function(key){
-            if(attributeHtml(attrs[key])){ seen[key]=true; keys.push(key); }
-        });
+        var attrs=block.attributes||{}, keys=[];
         try {
-            if(window.wp && wp.blocks && typeof wp.blocks.getBlockType==='function'){
-                var type=wp.blocks.getBlockType(block.name), schema=type && type.attributes ? type.attributes : {};
-                Object.keys(schema).forEach(function(key){
-                    var def=schema[key]||{};
-                    if(seen[key] || !attributeHtml(attrs[key])){ return; }
-                    if(/^(url|href|src|alt|caption|title|heading|label|placeholder|id|className)$/i.test(key)){ return; }
-                    if(def.role==='content' || def.source==='html' || def.source==='text'){
-                        seen[key]=true; keys.push(key);
-                    }
-                });
-            }
+            if(!(window.wp && wp.blocks && typeof wp.blocks.getBlockType==='function')){ return keys; }
+            var type=wp.blocks.getBlockType(block.name), schema=type && type.attributes ? type.attributes : {};
+            Object.keys(schema).forEach(function(key){
+                var def=schema[key]||{};
+                if(!attributeHtml(attrs[key])){ return; }
+                if(/^(url|href|src|alt|caption|title|heading|label|placeholder|id|className)$/i.test(key)){ return; }
+                // Only attributes whose registered schema explicitly stores markup are safe.
+                // `source: text` and `role: content` describe plain text/semantics and do not
+                // permit injecting an <a> element into the serialized block value.
+                if(def.source==='html' || def.source==='rich-text' || def.type==='rich-text'){
+                    keys.push(key);
+                }
+            });
         } catch(e){}
         return keys;
     }

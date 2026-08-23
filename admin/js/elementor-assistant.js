@@ -586,19 +586,35 @@
     }
 
 
-    function verifyPublishedLink($card, sourcePostId, targetPostId, anchor) {
+    function finalizePublishedInsertion(finalizeToken) {
         return $.ajax({
             url: ILSM_ELEMENTOR.ajaxUrl,
             method: 'POST',
             dataType: 'json',
             data: {
-                action: 'ilsm_elementor_verify_published_link',
+                action: 'ilsm_elementor_finalize_insertion',
                 nonce: ILSM_ELEMENTOR.nonce,
-                source_post_id: sourcePostId,
-                target_post_id: targetPostId,
-                anchor: anchor
+                finalize_token: String(finalizeToken || '')
             }
         });
+    }
+
+    function rollbackElementorControl(container, settingKey, originalHtml) {
+        var deferred = $.Deferred();
+        try {
+            var update = {};
+            update[settingKey] = originalHtml;
+            $e.run('document/elements/settings', {container: container, settings: update});
+            var result = $e.run('document/save/update', {document: elementor.documents.getCurrent()});
+            $.when(result).done(function () {
+                deferred.resolve();
+            }).fail(function () {
+                deferred.reject();
+            });
+        } catch (e) {
+            deferred.reject();
+        }
+        return deferred.promise();
     }
 
     function renderInsertedActions($card, context) {
@@ -736,64 +752,71 @@
             $.when(saveResult).done(function () {
                 var savedHtml = String(container.settings.get(settingKey) || '');
                 var targetUrl = String(data.target_url || '');
-                if (savedHtml.indexOf('data-ilsm-insertion="1"') === -1 || (targetUrl && savedHtml.indexOf(targetUrl) === -1)) {
-                    setCardStatus($card, 'error', 'Insertion failed verification. The link was not confirmed.');
-                    $status.text(ILSM_ELEMENTOR.strings.liveWidgetVerifyFailed);
-                    $button.prop('disabled', false).removeClass('is-loading');
-                    return;
-                }
-                waitForRenderedLink(elementId, targetUrl).done(function () {
-                    var sourcePostId = postId();
-                    var targetPostId = parseInt($card.attr('data-target-id'), 10) || 0;
-                    verifyPublishedLink($card, sourcePostId, targetPostId, anchor).done(function (verifyResponse) {
-                        var verify = verifyResponse && verifyResponse.success ? (verifyResponse.data || {}) : {};
-                        if (!verify.persisted) {
-                            setCardStatus($card, 'error', 'Elementor reported a save, but the link is not present in persisted Elementor data. No published status was claimed.');
-                            $status.text(ILSM_ELEMENTOR.strings.saveVerifyFailed);
-                            $button.prop('disabled', false).removeClass('is-loading');
-                            return;
-                        }
-                        $card.addClass('is-inserted');
-                        if (verify.published && verify.live) {
-                            setCardStatus($card, 'success', ILSM_ELEMENTOR.strings.publishedVerified || 'Published and verified live.');
-                            $status.text(ILSM_ELEMENTOR.strings.publishedVerified || 'Published and verified live.');
-                        } else if (!verify.published) {
-                            setCardStatus($card, 'info', 'Inserted and verified in saved Elementor data. This page is not published, so there is no live link to verify yet.');
-                            $status.text(ILSM_ELEMENTOR.strings.publishWhenReady);
-                        } else {
-                            setCardStatus($card, 'info', ILSM_ELEMENTOR.strings.savedNotLive || 'Saved in Elementor, but the public page could not yet be verified. Update/publish the page and verify again.');
-                            $status.text(ILSM_ELEMENTOR.strings.savedNotLive || 'Saved, but live verification is pending.');
-                        }
-                        openElementorTextControl(elementId);
-                        renderInsertedActions($card, {
-                            elementId: elementId,
-                            settingKey: settingKey,
-                            controlType: controlType,
-                            originalHtml: originalHtml,
-                            insertedHtml: savedHtml,
-                            targetUrl: targetUrl
-                        });
-                    }).fail(function () {
-                        setCardStatus($card, 'info', 'The link is visible in Elementor, but server-side publication verification could not be completed. No live status was claimed.');
-                        $status.text(ILSM_ELEMENTOR.strings.saveLivePending);
+                var finalizeToken = String(data.finalize_token || '');
+                if (!finalizeToken || savedHtml.indexOf('data-ilsm-insertion="1"') === -1 || (targetUrl && savedHtml.indexOf(targetUrl) === -1)) {
+                    rollbackElementorControl(container, settingKey, originalHtml).always(function () {
+                        setCardStatus($card, 'error', ILSM_ELEMENTOR.strings.saveVerifyFailed);
+                        $status.text(ILSM_ELEMENTOR.strings.saveVerifyFailed);
                         $button.prop('disabled', false).removeClass('is-loading');
                     });
-                }).fail(function () {
-                    try {
-                        $e.run('document/elements/settings', { container: container, settings: (function(){ var update={}; update[settingKey]=originalHtml; return update; })() });
-                        $e.run('document/save/update', { document: elementor.documents.getCurrent() });
-                    } catch (rollbackError) {}
-                    setCardStatus($card, 'error', ILSM_ELEMENTOR.strings.renderVerifyFailed || 'Insertion failed: the saved control did not render a live link. The original value was restored.');
-                    $status.text(ILSM_ELEMENTOR.strings.renderVerifyFailed || 'The inserted HTML was not rendered as a live link. DMA InternLink Mapper restored the original Elementor value.');
-                    $button.prop('disabled', false).removeClass('is-loading').html('<span class="fa fa-refresh" aria-hidden="true"></span> ' + esc(ILSM_ELEMENTOR.strings.retry || 'Retry'));
+                    return;
+                }
+
+                finalizePublishedInsertion(finalizeToken).done(function (finalizeResponse) {
+                    var finalized = finalizeResponse && finalizeResponse.success ? (finalizeResponse.data || {}) : {};
+                    var historyId = parseInt(finalized.history_id, 10) || 0;
+                    if (!historyId || !finalized.persisted) {
+                        rollbackElementorControl(container, settingKey, originalHtml).always(function () {
+                            setCardStatus($card, 'error', ILSM_ELEMENTOR.strings.saveVerifyFailed);
+                            $status.text(ILSM_ELEMENTOR.strings.saveVerifyFailed);
+                            $button.prop('disabled', false).removeClass('is-loading');
+                        });
+                        return;
+                    }
+
+                    $card.addClass('is-inserted');
+                    if (finalized.published && finalized.live) {
+                        setCardStatus($card, 'success', ILSM_ELEMENTOR.strings.publishedVerified);
+                        $status.text(ILSM_ELEMENTOR.strings.publishedVerified);
+                    } else if (!finalized.published) {
+                        setCardStatus($card, 'info', ILSM_ELEMENTOR.strings.publishWhenReady);
+                        $status.text(ILSM_ELEMENTOR.strings.publishWhenReady);
+                    } else {
+                        setCardStatus($card, 'info', ILSM_ELEMENTOR.strings.savedNotLive);
+                        $status.text(ILSM_ELEMENTOR.strings.savedNotLive);
+                    }
+
+                    openElementorTextControl(elementId);
+                    renderInsertedActions($card, {
+                        elementId: elementId,
+                        settingKey: settingKey,
+                        controlType: controlType,
+                        historyId: historyId,
+                        targetUrl: targetUrl
+                    });
+
+                    waitForRenderedLink(elementId, targetUrl).fail(function () {
+                        setCardStatus($card, 'info', ILSM_ELEMENTOR.strings.saveLivePending);
+                    });
+                }).fail(function (xhr) {
+                    var message = xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message;
+                    message = message || ILSM_ELEMENTOR.strings.saveVerifyFailed;
+                    rollbackElementorControl(container, settingKey, originalHtml).done(function () {
+                        setCardStatus($card, 'error', message);
+                        $status.text(message);
+                        $button.prop('disabled', false).removeClass('is-loading');
+                    }).fail(function () {
+                        setCardStatus($card, 'error', ILSM_ELEMENTOR.strings.rollbackFailed);
+                        $status.text(ILSM_ELEMENTOR.strings.rollbackFailed);
+                        $button.prop('disabled', false).removeClass('is-loading');
+                    });
                 });
             }).fail(function () {
-                try {
-                    $e.run('document/elements/settings', { container: container, settings: (function(){ var update={}; update[settingKey]=originalHtml; return update; })() });
-                } catch (rollbackError) {}
-                setCardStatus($card, 'error', 'Insertion failed: Elementor could not save. The change was reverted.');
-                $status.text(ILSM_ELEMENTOR.strings.saveFailedReverted);
-                $button.prop('disabled', false).removeClass('is-loading');
+                rollbackElementorControl(container, settingKey, originalHtml).always(function () {
+                    setCardStatus($card, 'error', ILSM_ELEMENTOR.strings.saveFailedReverted);
+                    $status.text(ILSM_ELEMENTOR.strings.saveFailedReverted);
+                    $button.prop('disabled', false).removeClass('is-loading');
+                });
             });
         }).fail(function (xhr) {
             var message = xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message;
@@ -819,53 +842,46 @@
         var $card = $button.closest('.ilsm-el-card');
         var context = $card.data('ilsmInsertionContext') || {};
         var $status = $('#ilsm-elementor-tab-panel .ilsm-el-status');
-        if (!context.elementId || !context.settingKey || typeof context.originalHtml !== 'string') {
-            setCardStatus($card, 'error', 'Undo is unavailable because the verified insertion context is missing.');
+        var historyId = parseInt(context.historyId, 10) || 0;
+        if (!historyId) {
+            setCardStatus($card, 'error', ILSM_ELEMENTOR.strings.undoMissingContext);
             return;
         }
         if (hasUnsavedElementorChanges()) {
-            setCardStatus($card, 'error', 'Undo blocked: save/update your current Elementor changes first.');
+            setCardStatus($card, 'error', ILSM_ELEMENTOR.strings.undoSaveFirst);
             $status.text(ILSM_ELEMENTOR.strings.unsaved);
             return;
         }
-        var container = getElementorContainer(context.elementId);
-        if (!container || !container.settings || typeof container.settings.get !== 'function') {
-            setCardStatus($card, 'error', 'Undo failed: the Elementor control is no longer available.');
-            return;
-        }
-        var currentHtml = String(container.settings.get(context.settingKey) || '');
-        if (currentHtml !== String(context.insertedHtml || '')) {
-            setCardStatus($card, 'error', 'Undo stopped: this Elementor text control changed after insertion.');
-            openElementorTextControl(context.elementId);
-            return;
-        }
         $button.prop('disabled', true);
-        setCardStatus($card, 'info', 'Undoing the verified insertion…');
-        try {
-            $e.run('document/elements/settings', { container: container, settings: (function(){ var update={}; update[context.settingKey]=context.originalHtml; return update; })() });
-            var saveResult = $e.run('document/save/update', { document: elementor.documents.getCurrent() });
-            $.when(saveResult).done(function () {
-                if (String(container.settings.get(context.settingKey) || '') !== String(context.originalHtml)) {
-                    setCardStatus($card, 'error', 'Undo failed verification.');
-                    $button.prop('disabled', false);
-                    return;
-                }
-                $card.removeClass('is-inserted').removeData('ilsmInsertionContext');
-                setCardStatus($card, 'info', ILSM_ELEMENTOR.strings.undone || 'Insertion undone. The original Elementor text was restored.');
-                $status.text(ILSM_ELEMENTOR.strings.undone || 'Insertion undone.');
-                restoreReadyActions($card);
-                openElementorTextControl(context.elementId);
-            }).fail(function () {
-                try {
-                    $e.run('document/elements/settings', { container: container, settings: (function(){ var update={}; update[context.settingKey]=context.insertedHtml; return update; })() });
-                } catch (rollbackError) {}
-                setCardStatus($card, 'error', 'Undo failed: Elementor could not save the restored text.');
+        setCardStatus($card, 'info', ILSM_ELEMENTOR.strings.undoing);
+        $.ajax({
+            url: ILSM_ELEMENTOR.ajaxUrl,
+            method: 'POST',
+            dataType: 'json',
+            data: {
+                action: 'ilsm_elementor_undo_insertion',
+                nonce: ILSM_ELEMENTOR.nonce,
+                history_id: historyId
+            }
+        }).done(function (response) {
+            if (!response || !response.success) {
+                var message = response && response.data && response.data.message ? response.data.message : ILSM_ELEMENTOR.strings.undoSaveFailed;
+                setCardStatus($card, 'error', message);
+                $status.text(message);
                 $button.prop('disabled', false);
-            });
-        } catch (e) {
-            setCardStatus($card, 'error', 'Undo failed: Elementor rejected the text-control update.');
+                return;
+            }
+            $card.removeClass('is-inserted').removeData('ilsmInsertionContext');
+            setCardStatus($card, 'info', ILSM_ELEMENTOR.strings.undone);
+            $status.text(ILSM_ELEMENTOR.strings.undone);
+            window.location.reload();
+        }).fail(function (xhr) {
+            var message = xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message;
+            message = message || ILSM_ELEMENTOR.strings.undoSaveFailed;
+            setCardStatus($card, 'error', message);
+            $status.text(message);
             $button.prop('disabled', false);
-        }
+        });
     });
 
     $(document).on('click', '.ilsm-el-show-more', function () {

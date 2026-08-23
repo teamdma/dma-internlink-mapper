@@ -75,10 +75,9 @@ final class ILSM_Crawler {
         $matches = array();
         foreach ( array_chunk( $normalized_phrases, 80 ) as $chunk ) {
             $placeholders = implode( ',', array_fill( 0, count( $chunk ), '%s' ) );
-            $sql = "SELECT post_id,phrase,normalized,source,priority FROM {$table} WHERE scan_id=%d AND post_id<>%d AND normalized IN ({$placeholders}) ORDER BY priority DESC LIMIT 600";
-            $args = array_merge( array( absint( $scan_id ), absint( $post_id ) ), $chunk );
-            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-            $rows = $wpdb->get_results( $wpdb->prepare( $sql, $args ), ARRAY_A );
+            $args = array_merge( array( $table, absint( $scan_id ), absint( $post_id ) ), $chunk );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- The IN placeholder list is generated from a bounded array; the table identifier and all values are passed to prepare().
+            $rows = $wpdb->get_results( $wpdb->prepare( "SELECT post_id,phrase,normalized,source,priority FROM %i WHERE scan_id=%d AND post_id<>%d AND normalized IN ({$placeholders}) ORDER BY priority DESC LIMIT 600", $args ), ARRAY_A );
             foreach ( (array) $rows as $row ) {
                 $target_id = absint( $row['post_id'] ?? 0 );
                 if ( ! $target_id ) { continue; }

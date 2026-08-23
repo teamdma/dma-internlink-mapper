@@ -19,13 +19,13 @@ final class ILSM_Locks {
 		$now   = current_time( 'mysql', true );
 		$until = gmdate( 'Y-m-d H:i:s', time() + max( 30, absint( $ttl ) ) );
 
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE lock_name=%s AND expires_at<UTC_TIMESTAMP()", $name ) );
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock state is plugin-owned and must be read/written fresh.
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE lock_name=%s AND expires_at<UTC_TIMESTAMP()', $table, $name ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock acquisition must bypass persistent caching.
 		$inserted = $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-				"INSERT IGNORE INTO {$table} (lock_name,lock_token,expires_at,created_at) VALUES (%s,%s,%s,%s)",
+				'INSERT IGNORE INTO %i (lock_name,lock_token,expires_at,created_at) VALUES (%s,%s,%s,%s)',
+				$table,
 				$name,
 				hash( 'sha256', $token ),
 				$until,
@@ -38,11 +38,11 @@ final class ILSM_Locks {
 	/** Return lock metadata, or null when no lock exists. */
 	public static function inspect( $name ) {
 		global $wpdb;
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Lock metadata is mutable operation state.
 		return $wpdb->get_row(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-				'SELECT lock_name,expires_at,created_at FROM ' . ILSM_Database::table( 'locks' ) . ' WHERE lock_name=%s',
+				'SELECT lock_name,expires_at,created_at FROM %i WHERE lock_name=%s',
+				ILSM_Database::table( 'locks' ),
 				sanitize_key( $name )
 			),
 			ARRAY_A
@@ -69,12 +69,15 @@ final class ILSM_Locks {
 			return false;
 		}
 
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-		return false !== $wpdb->query(
+		/* Delete only the same stale row inspected above. */
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Compare-and-delete prevents stale recovery from removing a replacement lock.
+		return 1 === (int) $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-				'DELETE FROM ' . ILSM_Database::table( 'locks' ) . ' WHERE lock_name=%s',
-				$name
+				'DELETE FROM %i WHERE lock_name=%s AND expires_at=%s AND created_at=%s',
+				ILSM_Database::table( 'locks' ),
+				$name,
+				(string) $lock['expires_at'],
+				(string) $lock['created_at']
 			)
 		);
 	}
@@ -91,13 +94,13 @@ final class ILSM_Locks {
 		$until = gmdate( 'Y-m-d H:i:s', time() + max( 30, absint( $ttl ) ) );
 		$now   = current_time( 'mysql', true );
 
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. Only fixed or allowlisted SQL identifiers are interpolated.
-		$wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE lock_name=%s AND expires_at<UTC_TIMESTAMP()", $name ) );
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock state is plugin-owned and must be read/written fresh.
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE lock_name=%s AND expires_at<UTC_TIMESTAMP()', $table, $name ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock acquisition must bypass persistent caching.
 		$inserted = $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-				"INSERT IGNORE INTO {$table} (lock_name,lock_token,expires_at,created_at) VALUES (%s,%s,%s,%s)",
+				'INSERT IGNORE INTO %i (lock_name,lock_token,expires_at,created_at) VALUES (%s,%s,%s,%s)',
+				$table,
 				$name,
 				$hash,
 				$until,
@@ -111,11 +114,11 @@ final class ILSM_Locks {
 		// A matching live row may already exist after a concurrent retry. MySQL
 		// returns 0 affected rows when expires_at already has the same value, which
 		// is still a successful ownership check rather than a lost lock.
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock refresh must bypass persistent caching.
 		$updated = $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-				"UPDATE {$table} SET expires_at=%s WHERE lock_name=%s AND lock_token=%s",
+				'UPDATE %i SET expires_at=%s WHERE lock_name=%s AND lock_token=%s',
+				$table,
 				$until,
 				$name,
 				$hash
@@ -128,11 +131,11 @@ final class ILSM_Locks {
 			return true;
 		}
 
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Lock ownership must be verified against current database state.
 		return (bool) $wpdb->get_var(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-				"SELECT 1 FROM {$table} WHERE lock_name=%s AND lock_token=%s AND expires_at>=UTC_TIMESTAMP() LIMIT 1",
+				'SELECT 1 FROM %i WHERE lock_name=%s AND lock_token=%s AND expires_at>=UTC_TIMESTAMP() LIMIT 1',
+				$table,
 				$name,
 				$hash
 			)
@@ -146,11 +149,11 @@ final class ILSM_Locks {
 		$name  = sanitize_key( $name );
 		$hash  = hash( 'sha256', (string) $token );
 		$until = gmdate( 'Y-m-d H:i:s', time() + max( 30, absint( $ttl ) ) );
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock refresh must bypass persistent caching.
 		$result = $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-				"UPDATE {$table} SET expires_at=%s WHERE lock_name=%s AND lock_token=%s",
+				'UPDATE %i SET expires_at=%s WHERE lock_name=%s AND lock_token=%s',
+				$table,
 				$until,
 				$name,
 				$hash
@@ -165,11 +168,11 @@ final class ILSM_Locks {
 
 		// Zero affected rows can mean the timestamp was already identical. Verify
 		// ownership and validity explicitly instead of treating that as expiration.
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Lock ownership must be verified against current database state.
 		return (bool) $wpdb->get_var(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Only fixed or allowlisted SQL identifiers are interpolated.
-				"SELECT 1 FROM {$table} WHERE lock_name=%s AND lock_token=%s AND expires_at>=UTC_TIMESTAMP() LIMIT 1",
+				'SELECT 1 FROM %i WHERE lock_name=%s AND lock_token=%s AND expires_at>=UTC_TIMESTAMP() LIMIT 1',
+				$table,
 				$name,
 				$hash
 			)
@@ -179,11 +182,11 @@ final class ILSM_Locks {
 	/** Release a lock only when the token matches. */
 	public static function release( $name, $token ) {
 		global $wpdb;
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-		return false !== $wpdb->query(
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock release must bypass persistent caching.
+		return 1 === (int) $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-				'DELETE FROM ' . ILSM_Database::table( 'locks' ) . ' WHERE lock_name=%s AND lock_token=%s',
+				'DELETE FROM %i WHERE lock_name=%s AND lock_token=%s',
+				ILSM_Database::table( 'locks' ),
 				sanitize_key( $name ),
 				hash( 'sha256', (string) $token )
 			)
@@ -199,7 +202,7 @@ final class ILSM_Locks {
 	 *
 	 * @param string $name       Lock name.
 	 * @param string $token_hash Persisted SHA-256 token hash.
-	 * @return bool True when the delete query succeeded, false on database error.
+	 * @return bool True only when the owned lock row was removed.
 	 */
 	public static function release_by_hash( $name, $token_hash ) {
 		global $wpdb;
@@ -209,11 +212,11 @@ final class ILSM_Locks {
 			return false;
 		}
 
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. This revokes exactly one persisted lease and must read mutable lock state directly.
-		return false !== $wpdb->query(
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock release must bypass persistent caching.
+		return 1 === (int) $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and an allowlisted identifier before prepare().
-				'DELETE FROM ' . ILSM_Database::table( 'locks' ) . ' WHERE lock_name=%s AND lock_token=%s',
+				'DELETE FROM %i WHERE lock_name=%s AND lock_token=%s',
+				ILSM_Database::table( 'locks' ),
 				$name,
 				$token_hash
 			)
@@ -223,11 +226,24 @@ final class ILSM_Locks {
 	/** Force-release a named lock. Callers must enforce capability and nonce checks. */
 	public static function force_release( $name ) {
 		global $wpdb;
-		// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic lock release must bypass persistent caching.
 		return false !== $wpdb->query(
 			$wpdb->prepare(
-				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-				'DELETE FROM ' . ILSM_Database::table( 'locks' ) . ' WHERE lock_name=%s',
+				'DELETE FROM %i WHERE lock_name=%s',
+				ILSM_Database::table( 'locks' ),
+				sanitize_key( $name )
+			)
+		);
+	}
+
+	/** Release a lock only when it is still expired at delete time. */
+	public static function release_expired( $name ) {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Atomic stale-lock recovery must evaluate expiry in the delete statement.
+		return 1 === (int) $wpdb->query(
+			$wpdb->prepare(
+				'DELETE FROM %i WHERE lock_name=%s AND expires_at<UTC_TIMESTAMP()',
+				ILSM_Database::table( 'locks' ),
 				sanitize_key( $name )
 			)
 		);

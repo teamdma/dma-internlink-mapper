@@ -136,26 +136,44 @@ function ilsm_uninstall_site() {
 		);
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
 	}
-	foreach ( array( 'ilsm_settings','ilsm_db_version','ilsm_last_scan_id','ilsm_opportunity_engine_version','ilsm_ignored_orphan_post_ids','ilsm_post_types_migrated_142','ilsm_broken_link_monitor_state','ilsm_migration_lock','ilsm_migration_error' ) as $option ) {
-		delete_option( $option );
-	}
+	delete_option( 'ilsm_settings' );
+	delete_option( 'ilsm_db_version' );
+	delete_option( 'ilsm_schema_signature' );
+	delete_option( 'ilsm_last_scan_id' );
+	delete_option( 'ilsm_opportunity_engine_version' );
+	delete_option( 'ilsm_ignored_orphan_post_ids' );
+	delete_option( 'ilsm_post_types_migrated_142' );
+	delete_option( 'ilsm_broken_link_monitor_state' );
+	delete_option( 'ilsm_migration_lock' );
+	delete_option( 'ilsm_migration_error' );
 	$like           = $wpdb->esc_like( '_transient_ilsm_' ) . '%';
 	$timeout_like   = $wpdb->esc_like( '_transient_timeout_ilsm_' ) . '%';
 	$domain_op_like = $wpdb->esc_like( 'ilsm_domain_op_' ) . '%';
 	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Full uninstall removes plugin-owned transient and expiring operation-lock options.
-	$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s", $like, $timeout_like, $domain_op_like ) );
+	$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s', $wpdb->options, $like, $timeout_like, $domain_op_like ) );
 }
 
 if ( is_multisite() ) {
-	$page = 1;
+	$ilsm_offset = 0;
 	do {
-		$ilsm_site_ids = get_sites( array( 'fields' => 'ids', 'number' => 100, 'paged' => $page ) );
+		$ilsm_site_ids = get_sites(
+			array(
+				'fields'  => 'ids',
+				'number'  => 100,
+				'offset'  => $ilsm_offset,
+				'orderby' => 'id',
+				'order'   => 'ASC',
+			)
+		);
 		foreach ( $ilsm_site_ids as $ilsm_site_id ) {
 			switch_to_blog( $ilsm_site_id );
-			ilsm_uninstall_site();
-			restore_current_blog();
+			try {
+				ilsm_uninstall_site();
+			} finally {
+				restore_current_blog();
+			}
 		}
-		$page++;
+		$ilsm_offset += count( $ilsm_site_ids );
 	} while ( 100 === count( $ilsm_site_ids ) );
 } else {
 	ilsm_uninstall_site();

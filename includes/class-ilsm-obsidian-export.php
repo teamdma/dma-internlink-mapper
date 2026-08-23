@@ -31,7 +31,7 @@ class ILSM_Obsidian_Export {
     }
 
     public static function download() {
-        if ( ! current_user_can( 'ilsm_view_reports' ) ) {
+        if ( ! current_user_can( 'ilsm_export_reports' ) ) {
             wp_die(
                 esc_html__( 'You do not have permission to export this report.', 'dma-internlink-mapper' ),
                 '',
@@ -47,7 +47,7 @@ class ILSM_Obsidian_Export {
 
         $scope   = isset( $_GET['scope'] ) ? sanitize_key( wp_unslash( $_GET['scope'] ) ) : 'site';
         $scope   = in_array( $scope, array( 'site', 'page' ), true ) ? $scope : 'site';
-        $post_id = isset( $_GET['post_id'] ) ? absint( $_GET['post_id'] ) : 0;
+        $post_id = isset( $_GET['post_id'] ) ? absint( wp_unslash( $_GET['post_id'] ) ) : 0;
         $view    = isset( $_GET['view'] ) ? sanitize_key( wp_unslash( $_GET['view'] ) ) : 'site-architecture';
         $view    = in_array( $view, array( 'knowledge-graph', 'page-architecture', 'site-architecture' ), true ) ? $view : 'site-architecture';
 
@@ -115,13 +115,13 @@ class ILSM_Obsidian_Export {
         $links_table = ILSM_Database::checked_table( ILSM_Database::table( 'links' ) );
 
         if ( 'site' === $scope ) {
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned tables, identifiers come from strict allowlist; export requires current scan data.
-            $pages = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$pages_table} WHERE scan_id=%d ORDER BY id ASC LIMIT %d", $scan_id, self::MAX_SITE_PAGES ), ARRAY_A );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Export requires the current completed scan data.
+            $pages = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE scan_id=%d ORDER BY id ASC LIMIT %d", $pages_table, $scan_id, self::MAX_SITE_PAGES ), ARRAY_A );
             $ids   = array_map( 'absint', wp_list_pluck( $pages, 'post_id' ) );
         } else {
             $ids = array( absint( $post_id ) );
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned tables, identifiers come from strict allowlist; export requires current scan data.
-            $neighbors = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,target_post_id FROM {$links_table} WHERE scan_id=%d AND destination_type<>'external' AND (source_post_id=%d OR target_post_id=%d) LIMIT %d", $scan_id, $post_id, $post_id, self::MAX_LINKS ), ARRAY_A );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Export requires the current completed scan data.
+            $neighbors = $wpdb->get_results( $wpdb->prepare( "SELECT source_post_id,target_post_id FROM %i WHERE scan_id=%d AND destination_type<>'external' AND (source_post_id=%d OR target_post_id=%d) LIMIT %d", $links_table, $scan_id, $post_id, $post_id, self::MAX_LINKS ), ARRAY_A );
             foreach ( $neighbors as $neighbor ) {
                 $ids[] = absint( $neighbor['source_post_id'] );
                 $ids[] = absint( $neighbor['target_post_id'] );
@@ -131,9 +131,9 @@ class ILSM_Obsidian_Export {
                 return array( 'pages' => array(), 'links' => array() );
             }
             $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-            $args         = array_merge( array( $scan_id ), $ids );
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Placeholder list is generated internally from validated integer IDs; table identifier is allowlisted.
-            $pages = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$pages_table} WHERE scan_id=%d AND post_id IN ({$placeholders}) ORDER BY id ASC", $args ), ARRAY_A );
+            $args         = array_merge( array( $pages_table, $scan_id ), $ids );
+            // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- The IN placeholder list is generated from validated integer IDs; the table identifier and all values are passed to prepare().
+            $pages = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE scan_id=%d AND post_id IN ({$placeholders}) ORDER BY id ASC", $args ), ARRAY_A );
         }
 
         if ( empty( $pages ) ) {
@@ -142,9 +142,9 @@ class ILSM_Obsidian_Export {
 
         $ids          = array_map( 'absint', wp_list_pluck( $pages, 'post_id' ) );
         $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-        $args         = array_merge( array( $scan_id ), $ids, $ids, array( self::MAX_LINKS ) );
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Placeholder lists are generated internally from validated integer IDs; arguments contain scan ID, both ID lists, and LIMIT in matching order; table identifier is allowlisted.
-        $links = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$links_table} WHERE scan_id=%d AND (source_post_id IN ({$placeholders}) OR target_post_id IN ({$placeholders})) ORDER BY id ASC LIMIT %d", $args ), ARRAY_A );
+        $args         = array_merge( array( $links_table, $scan_id ), $ids, $ids, array( self::MAX_LINKS ) );
+        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Placeholder lists are generated internally from validated integer IDs; the table identifier and all values are passed to prepare().
+        $links = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM %i WHERE scan_id=%d AND (source_post_id IN ({$placeholders}) OR target_post_id IN ({$placeholders})) ORDER BY id ASC LIMIT %d", $args ), ARRAY_A );
 
         return array(
             'pages' => $pages,

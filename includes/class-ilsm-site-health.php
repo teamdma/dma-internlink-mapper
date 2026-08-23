@@ -85,8 +85,11 @@ final class ILSM_Site_Health {
 
 	/** Check the installed schema version. */
 	public static function test_database_schema() {
-		$installed = (string) get_option( 'ilsm_db_version', '0.0.0' );
-		$healthy   = defined( 'ILSM_DB_VERSION' ) && version_compare( $installed, ILSM_DB_VERSION, '>=' );
+		$installed           = (string) get_option( 'ilsm_db_version', '0.0.0' );
+		$installed_signature = (string) get_option( 'ilsm_schema_signature', '' );
+		$healthy = defined( 'ILSM_DB_VERSION' ) && defined( 'ILSM_SCHEMA_SIGNATURE' )
+			&& version_compare( $installed, ILSM_DB_VERSION, '>=' )
+			&& hash_equals( ILSM_SCHEMA_SIGNATURE, $installed_signature );
 		return array(
 			'label'       => $healthy ? __( 'The plugin database schema is current', 'dma-internlink-mapper' ) : __( 'The plugin database schema needs repair', 'dma-internlink-mapper' ),
 			'status'      => $healthy ? 'good' : 'recommended',
@@ -96,29 +99,35 @@ final class ILSM_Site_Health {
 		);
 	}
 
-	/** Verify all plugin-owned tables exist. */
+	/** Verify all plugin-owned tables and runtime-critical columns exist. */
 	public static function test_database_tables() {
-		$missing = array();
-		foreach ( array( 'scans', 'pages', 'links', 'issues', 'keywords', 'phrases', 'feedback', 'opportunities', 'insertions', 'external_actions', 'locks' ) as $name ) {
-			$table = ILSM_Database::table( $name );
-			if ( ! ILSM_Database::table_exists( $table ) ) {
-				$missing[] = $name;
-			}
-		}
-		$healthy = empty( $missing );
+		$status  = ILSM_Database::schema_status();
+		$healthy = ! empty( $status['healthy'] );
 
 		if ( $healthy ) {
-			$message = __( 'The plugin can read and write its indexed scan data.', 'dma-internlink-mapper' );
+			$message = __( 'The plugin can read and write its indexed scan data using the current table structure.', 'dma-internlink-mapper' );
 		} else {
-			/* translators: %s: Comma-separated list of missing database table suffixes. */
-			$message = sprintf( __( 'Missing tables: %s. Run the schema repair action before starting a scan.', 'dma-internlink-mapper' ), implode( ', ', $missing ) );
+			$parts = array();
+			if ( ! empty( $status['missing_tables'] ) ) {
+				/* translators: %s: Comma-separated list of missing database table suffixes. */
+				$parts[] = sprintf( __( 'Missing tables: %s.', 'dma-internlink-mapper' ), implode( ', ', array_map( 'sanitize_key', $status['missing_tables'] ) ) );
+			}
+			if ( ! empty( $status['missing_columns'] ) ) {
+				$column_parts = array();
+				foreach ( $status['missing_columns'] as $table_name => $columns ) {
+					$column_parts[] = sanitize_key( $table_name ) . ': ' . implode( ', ', array_map( 'sanitize_key', $columns ) );
+				}
+				/* translators: %s: Semicolon-separated table and missing-column names. */
+				$parts[] = sprintf( __( 'Missing columns: %s.', 'dma-internlink-mapper' ), implode( '; ', $column_parts ) );
+			}
+			$message = implode( ' ', $parts ) . ' ' . __( 'Run the schema repair action before starting another scan.', 'dma-internlink-mapper' );
 		}
 
 		return array(
-			'label'       => $healthy ? __( 'All plugin database tables are available', 'dma-internlink-mapper' ) : __( 'One or more plugin database tables are missing', 'dma-internlink-mapper' ),
+			'label'       => $healthy ? __( 'All plugin database tables are available', 'dma-internlink-mapper' ) : __( 'The plugin database structure is incomplete', 'dma-internlink-mapper' ),
 			'status'      => $healthy ? 'good' : 'critical',
 			'badge'       => self::badge(),
-			'description' => sprintf( '<p>%s</p>', esc_html( $message ) ),
+			'description' => sprintf( '<p>%s</p>', esc_html( trim( $message ) ) ),
 			'test'        => 'ilsm_database_tables',
 		);
 	}

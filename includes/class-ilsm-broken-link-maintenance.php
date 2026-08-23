@@ -38,54 +38,123 @@ final class ILSM_Broken_Link_Maintenance {
 			$scan_id = absint( ILSM_Database::latest_completed_scan_id() );
 			$state  = get_option( self::STATE_KEY, array() );
 			$cursor = absint( ( $state['scan_id'] ?? 0 ) === $scan_id ? ( $state['cursor'] ?? 0 ) : 0 );
+			$search_cursor = isset( $state['search_cursor'] ) && preg_match( '/^[a-f0-9]{64}$/', (string) $state['search_cursor'] ) ? (string) $state['search_cursor'] : str_repeat( '0', 64 );
 			$table  = ILSM_Database::table( 'links' );
 			$search_table = ILSM_Database::table( 'search_console_urls' );
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Small count over an allowlisted plugin table, used only to split the hard-capped queue.
-			$search_count = absint( $wpdb->get_var( "SELECT COUNT(*) FROM {$search_table}" ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned link-health data is mutable and must be read or written directly; persistent caching would be stale.
+			$search_count = absint( $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', $search_table ) ) );
 			if ( ! $scan_id && ! $search_count ) { return new WP_Error( 'no_scan', __( 'Run a link scan or import a Search Console CSV before checking destinations.', 'dma-internlink-mapper' ) ); }
 			$search_limit = $search_count ? ( $scan_id ? max( 1, (int) floor( $limit / 2 ) ) : $limit ) : 0;
 			$link_limit = $scan_id ? max( 0, $limit - $search_limit ) : 0;
-			$external_sql = ! empty( $settings['broken_monitor_external'] ) ? '' : " AND destination_type<>'external'";
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Allowlisted plugin table and bounded fresh queue query.
-			$rows = $link_limit ? $wpdb->get_results( $wpdb->prepare( "SELECT MAX(id) id,target_url,target_url_hash FROM {$table} WHERE scan_id=%d AND id>%d AND target_url<>'' {$external_sql} GROUP BY target_url_hash,target_url ORDER BY id ASC LIMIT %d", $scan_id, $cursor, $link_limit ), ARRAY_A ) : array();
+			$include_external = ! empty( $settings['broken_monitor_external'] );
+			$rows = $link_limit ? self::monitor_link_rows( $table, $scan_id, $cursor, $link_limit, $include_external ) : array();
 			if ( ! $rows && $cursor ) {
 				$cursor = 0;
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Allowlisted plugin table and bounded fresh queue query.
-				$rows = $link_limit ? $wpdb->get_results( $wpdb->prepare( "SELECT MAX(id) id,target_url,target_url_hash FROM {$table} WHERE scan_id=%d AND id>%d AND target_url<>'' {$external_sql} GROUP BY target_url_hash,target_url ORDER BY id ASC LIMIT %d", $scan_id, $cursor, $link_limit ), ARRAY_A ) : array();
+				$rows = $link_limit ? self::monitor_link_rows( $table, $scan_id, $cursor, $link_limit, $include_external ) : array();
 			}
 
 			$checked = 0;
 			foreach ( $rows as $row ) {
-				$cursor = absint( $row['id'] );
+				$row_cursor = absint( $row['id'] );
 				$result = self::inspect_url( $row['target_url'] );
-				if ( is_wp_error( $result ) ) { continue; }
+				if ( is_wp_error( $result ) ) {
+					// A transient HTTP failure is retried after the keyset cursor wraps; it must not block later URLs forever.
+					$cursor = $row_cursor;
+					continue;
+				}
 				$issue = $result['status'] >= 400 ? 'broken' : ( $result['status'] >= 300 ? 'redirect' : '' );
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded prepared update of current scan evidence in an allowlisted plugin table.
-				$wpdb->query( $wpdb->prepare( "UPDATE {$table} SET http_status=%d,redirect_url=%s,issue_type=%s WHERE scan_id=%d AND target_url_hash=%s", $result['status'], $result['redirect'], $issue, $scan_id, $row['target_url_hash'] ) );
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned link-health data is mutable and must be written immediately.
+				$written = $wpdb->query( $wpdb->prepare( 'UPDATE %i SET http_status=%d,redirect_url=%s,issue_type=%s WHERE scan_id=%d AND target_url_hash=%s', $table, $result['status'], $result['redirect'], $issue, $scan_id, $row['target_url_hash'] ) );
+				if ( false === $written ) {
+					$persisted = self::persist_monitor_state( $scan_id, $cursor, $search_cursor );
+					if ( is_wp_error( $persisted ) ) { return $persisted; }
+					return new WP_Error( 'broken_monitor_write_failed', __( 'The link check completed, but WordPress could not save the result. The monitor cursor was kept before that URL so it can be retried.', 'dma-internlink-mapper' ) );
+				}
+				$cursor = $row_cursor;
 				$checked++;
 			}
 
-			$search_cursor = isset( $state['search_cursor'] ) && preg_match( '/^[a-f0-9]{64}$/', (string) $state['search_cursor'] ) ? (string) $state['search_cursor'] : str_repeat( '0', 64 );
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded prepared cursor query over an allowlisted plugin table.
-			$search_rows = $search_limit ? $wpdb->get_results( $wpdb->prepare( "SELECT url_hash,url FROM {$search_table} WHERE url_hash>%s ORDER BY url_hash ASC LIMIT %d", $search_cursor, $search_limit ), ARRAY_A ) : array();
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned link-health data is mutable and must be read or written directly; persistent caching would be stale.
+			$search_rows = $search_limit ? $wpdb->get_results( $wpdb->prepare( 'SELECT url_hash,url FROM %i WHERE url_hash>%s ORDER BY url_hash ASC LIMIT %d', $search_table, $search_cursor, $search_limit ), ARRAY_A ) : array();
 			if ( ! $search_rows && $search_limit ) {
 				$search_cursor = str_repeat( '0', 64 );
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded prepared cursor query over an allowlisted plugin table.
-				$search_rows = $wpdb->get_results( $wpdb->prepare( "SELECT url_hash,url FROM {$search_table} WHERE url_hash>%s ORDER BY url_hash ASC LIMIT %d", $search_cursor, $search_limit ), ARRAY_A );
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned link-health data is mutable and must be read or written directly; persistent caching would be stale.
+				$search_rows = $wpdb->get_results( $wpdb->prepare( 'SELECT url_hash,url FROM %i WHERE url_hash>%s ORDER BY url_hash ASC LIMIT %d', $search_table, $search_cursor, $search_limit ), ARRAY_A );
 			}
 			foreach ( $search_rows as $row ) {
-				$search_cursor = (string) $row['url_hash'];
+				$row_search_cursor = (string) $row['url_hash'];
 				$result = self::inspect_url( $row['url'] );
-				if ( is_wp_error( $result ) ) { continue; }
+				if ( is_wp_error( $result ) ) {
+					$search_cursor = $row_search_cursor;
+					continue;
+				}
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- One bounded imported URL status update.
-				$wpdb->update( $search_table, array( 'http_status' => $result['status'], 'checked_at' => current_time( 'mysql', true ) ), array( 'url_hash' => $row['url_hash'] ), array( '%d', '%s' ), array( '%s' ) );
+				$written = $wpdb->update( $search_table, array( 'http_status' => $result['status'], 'checked_at' => current_time( 'mysql', true ) ), array( 'url_hash' => $row['url_hash'] ), array( '%d', '%s' ), array( '%s' ) );
+				if ( false === $written ) {
+					$persisted = self::persist_monitor_state( $scan_id, $cursor, $search_cursor );
+					if ( is_wp_error( $persisted ) ) { return $persisted; }
+					return new WP_Error( 'search_monitor_write_failed', __( 'The imported URL check completed, but WordPress could not save the result. The monitor cursor was kept before that URL so it can be retried.', 'dma-internlink-mapper' ) );
+				}
+				$search_cursor = $row_search_cursor;
 				$checked++;
 			}
-			update_option( self::STATE_KEY, array( 'scan_id' => $scan_id, 'cursor' => $cursor, 'search_cursor' => $search_cursor, 'checked_at' => time() ), false );
+			$persisted = self::persist_monitor_state( $scan_id, $cursor, $search_cursor );
+			if ( is_wp_error( $persisted ) ) { return $persisted; }
 			return array( 'checked' => $checked, 'scan_id' => $scan_id );
 		} finally {
 			ILSM_Locks::release( 'broken_monitor', $token );
 		}
+	}
+
+	/** Persist the monitor cursor and verify the option that WordPress actually stored. */
+	private static function persist_monitor_state( $scan_id, $cursor, $search_cursor ) {
+		$next = array(
+			'scan_id'       => absint( $scan_id ),
+			'cursor'        => absint( $cursor ),
+			'search_cursor' => preg_match( '/^[a-f0-9]{64}$/', (string) $search_cursor ) ? (string) $search_cursor : str_repeat( '0', 64 ),
+			'checked_at'    => time(),
+		);
+		update_option( self::STATE_KEY, $next, false );
+		$stored = get_option( self::STATE_KEY, null );
+		if ( ! is_array( $stored ) || absint( $stored['scan_id'] ?? 0 ) !== $next['scan_id'] || absint( $stored['cursor'] ?? 0 ) !== $next['cursor'] || (string) ( $stored['search_cursor'] ?? '' ) !== $next['search_cursor'] || absint( $stored['checked_at'] ?? 0 ) !== $next['checked_at'] ) {
+			return new WP_Error( 'broken_monitor_state_write_failed', __( 'WordPress could not persist the broken-link monitor cursor. No successful state was claimed.', 'dma-internlink-mapper' ) );
+		}
+		return true;
+	}
+
+	/**
+	 * Load the next bounded link-monitor batch.
+	 *
+	 * The two query shapes are intentionally explicit instead of building SQL in
+	 * a variable. This keeps identifiers and values inside wpdb::prepare() while
+	 * making the external-link policy obvious to both reviewers and static tools.
+	 */
+	private static function monitor_link_rows( $table, $scan_id, $cursor, $limit, $include_external ) {
+		global $wpdb;
+		if ( $include_external ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned scan index; bounded monitor reads must reflect the latest scan state.
+			return $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT MAX(id) id,target_url,target_url_hash FROM %i WHERE scan_id=%d AND id>%d AND target_url<>'' GROUP BY target_url_hash,target_url ORDER BY id ASC LIMIT %d",
+					$table,
+					absint( $scan_id ),
+					absint( $cursor ),
+					max( 1, min( 10, absint( $limit ) ) )
+				),
+				ARRAY_A
+			);
+		}
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned scan index; bounded monitor reads must reflect the latest scan state.
+		return $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT MAX(id) id,target_url,target_url_hash FROM %i WHERE scan_id=%d AND id>%d AND target_url<>'' AND destination_type<>'external' GROUP BY target_url_hash,target_url ORDER BY id ASC LIMIT %d",
+				$table,
+				absint( $scan_id ),
+				absint( $cursor ),
+				max( 1, min( 10, absint( $limit ) ) )
+			),
+			ARRAY_A
+		);
 	}
 
 	private static function inspect_url( $url, $redirection = 3 ) {
@@ -141,21 +210,21 @@ final class ILSM_Broken_Link_Maintenance {
 		$table = ILSM_Database::table( 'links' );
 		if ( ! $target_hashes && $ids ) {
 			$id_placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-			$id_args = array_merge( array( $scan_id ), $ids );
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Selected representative IDs are prepared and capped at 20; the table identifier is allowlisted.
-			$target_hashes = array_values( array_unique( array_filter( $wpdb->get_col( $wpdb->prepare( "SELECT target_url_hash FROM {$table} WHERE scan_id=%d AND id IN ({$id_placeholders})", $id_args ) ) ) ) );
+			$id_args = array_merge( array( $table, $scan_id ), $ids );
+			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic IN placeholders are generated only from bounded validated integer IDs; the identifier and all values are passed through wpdb::prepare().
+			$target_hashes = array_values( array_unique( array_filter( $wpdb->get_col( $wpdb->prepare( "SELECT target_url_hash FROM %i WHERE scan_id=%d AND id IN ({$id_placeholders})", $id_args ) ) ) ) );
 		}
 		if ( 'unlink' !== $resolution && count( $target_hashes ) > 1 ) { wp_send_json_error( array( 'message' => __( 'Select one broken destination at a time for replacement or redirect.', 'dma-internlink-mapper' ) ), 400 ); }
 		if ( $target_hashes ) {
 			$placeholders = implode( ',', array_fill( 0, count( $target_hashes ), '%s' ) );
-			$args = array_merge( array( $scan_id ), $target_hashes, array( 20 ) );
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Runtime placeholders exactly match the validated hash list plus scan and hard LIMIT arguments.
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,target_url,target_url_hash,http_status,issue_type,link_location FROM {$table} WHERE scan_id=%d AND target_url_hash IN ({$placeholders}) AND (issue_type='broken' OR http_status>=400) ORDER BY id ASC LIMIT %d", $args ), ARRAY_A );
+			$args = array_merge( array( $table, $scan_id ), $target_hashes, array( 20 ) );
+			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic IN placeholders are generated only from bounded validated URL hashes; the identifier, scan ID, hashes and limit are passed through wpdb::prepare().
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,target_url,target_url_hash,http_status,issue_type,link_location FROM %i WHERE scan_id=%d AND target_url_hash IN ({$placeholders}) AND (issue_type='broken' OR http_status>=400) ORDER BY id ASC LIMIT %d", $args ), ARRAY_A );
 		} else {
 			$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-			$args = array_merge( array( $scan_id ), $ids );
-				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- IDs are prepared and query is capped at 20; the table identifier is allowlisted.
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,target_url,target_url_hash,http_status,issue_type,link_location FROM {$table} WHERE scan_id=%d AND id IN ({$placeholders})", $args ), ARRAY_A );
+			$args = array_merge( array( $table, $scan_id ), $ids );
+			// phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Dynamic IN placeholders are generated only from bounded validated integer IDs; the identifier, scan ID and IDs are passed through wpdb::prepare().
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id,source_post_id,target_url,target_url_hash,http_status,issue_type,link_location FROM %i WHERE scan_id=%d AND id IN ({$placeholders})", $args ), ARRAY_A );
 		}
 		$by_post = array(); $results = array(); $changed_ids = array(); $redirect_rows = array();
 		foreach ( $rows as $row ) {
@@ -193,35 +262,133 @@ final class ILSM_Broken_Link_Maintenance {
 	private static function unlink_post_urls( $post_id, $links, &$results, &$changed_ids = array(), $replacement = '', $scan_id = 0 ) {
 		global $wpdb;
 		$token = ILSM_Locks::acquire( 'broken_edit_' . $post_id, 120 );
-		if ( is_wp_error( $token ) ) { foreach ( $links as $id => $url ) { $results[ $id ] = __( 'Skipped: this source is being edited.', 'dma-internlink-mapper' ); } return; }
+		if ( is_wp_error( $token ) ) {
+			foreach ( $links as $id => $url ) { $results[ $id ] = __( 'Skipped: this source is being edited.', 'dma-internlink-mapper' ); }
+			return;
+		}
+
 		try {
 			$post = get_post( $post_id );
-			if ( ! $post || wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) { foreach ( $links as $id => $url ) { $results[ $id ] = __( 'Skipped: invalid source.', 'dma-internlink-mapper' ); } return; }
-			$base = get_permalink( $post );
-			$original = (string) $post->post_content; $updated = $original; $changed = array();
-			foreach ( $links as $id => $url ) { $next = self::transform_url( $updated, $url, $replacement, $base ); if ( $next !== $updated ) { $updated = $next; $changed[] = $id; } }
-			$elementor_original = get_post_meta( $post_id, '_elementor_data', true ); $elementor_updated = $elementor_original;
+			if ( ! $post || wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+				foreach ( $links as $id => $url ) { $results[ $id ] = __( 'Skipped: invalid source.', 'dma-internlink-mapper' ); }
+				return;
+			}
+
+			$base     = get_permalink( $post );
+			$original = (string) $post->post_content;
+			$updated  = $original;
+			$changed  = array();
+			foreach ( $links as $id => $url ) {
+				$next = self::transform_url( $updated, $url, $replacement, $base );
+				if ( $next !== $updated ) { $updated = $next; $changed[] = absint( $id ); }
+			}
+
+			$elementor_original = get_post_meta( $post_id, '_elementor_data', true );
+			$elementor_updated  = $elementor_original;
 			if ( is_string( $elementor_original ) && '' !== $elementor_original ) {
 				$data = json_decode( $elementor_original, true );
-				if ( is_array( $data ) ) { self::walk_elementor( $data, $links, $changed, 0, $base, $replacement ); $elementor_updated = wp_json_encode( $data ); }
-			}
-			$changed = array_values( array_unique( $changed ) );
-			if ( ! $changed ) { foreach ( $links as $id => $url ) { $results[ $id ] = __( 'Not changed: exact anchor was not found in editable content.', 'dma-internlink-mapper' ); } return; }
-			wp_save_post_revision( $post_id );
-			if ( $updated !== $original ) { $saved = wp_update_post( wp_slash( array( 'ID' => $post_id, 'post_content' => $updated ) ), true ); if ( is_wp_error( $saved ) ) { foreach ( $links as $id => $url ) { $results[ $id ] = $saved->get_error_message(); } return; } }
-			if ( $elementor_updated !== $elementor_original ) { update_post_meta( $post_id, '_elementor_data', wp_slash( $elementor_updated ) ); if ( class_exists( '\\Elementor\\Plugin' ) ) { \Elementor\Plugin::$instance->files_manager->clear_cache(); } }
-			self::reconcile_saved_source( absint( $scan_id ), $post_id, $links );
-			foreach ( $links as $id => $url ) {
-				if ( in_array( $id, $changed, true ) ) {
-					// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Keep the latest scan report consistent after a verified edit.
-					$wpdb->update( ILSM_Database::table( 'links' ), array( 'issue_type' => 'resolved', 'http_status' => 0 ), array( 'id' => absint( $id ) ), array( '%s', '%d' ), array( '%d' ) );
-					$changed_ids[] = absint( $id );
-					$results[ $id ] = $replacement ? __( 'Broken link replaced with the verified destination.', 'dma-internlink-mapper' ) : __( 'Unlinked; visible anchor text was preserved.', 'dma-internlink-mapper' );
-				} else {
-					$results[ $id ] = __( 'Not changed: exact anchor was not found in editable content.', 'dma-internlink-mapper' );
+				if ( is_array( $data ) ) {
+					self::walk_elementor( $data, $links, $changed, 0, $base, $replacement );
+					$encoded = wp_json_encode( $data );
+					if ( false === $encoded ) {
+						foreach ( $links as $id => $url ) { $results[ $id ] = __( 'Skipped: Elementor data could not be encoded safely.', 'dma-internlink-mapper' ); }
+						return;
+					}
+					$elementor_updated = $encoded;
 				}
 			}
-		} finally { ILSM_Locks::release( 'broken_edit_' . $post_id, $token ); }
+
+			$changed = array_values( array_unique( array_map( 'absint', $changed ) ) );
+			if ( ! $changed ) {
+				foreach ( $links as $id => $url ) { $results[ $id ] = __( 'Not changed: exact anchor was not found in editable content.', 'dma-internlink-mapper' ); }
+				return;
+			}
+
+			wp_save_post_revision( $post_id );
+			$content_changed   = $updated !== $original;
+			$elementor_changed = $elementor_updated !== $elementor_original;
+
+			if ( $content_changed ) {
+				$saved = wp_update_post( wp_slash( array( 'ID' => $post_id, 'post_content' => $updated ) ), true );
+				if ( is_wp_error( $saved ) || (string) get_post_field( 'post_content', $post_id ) !== $updated ) {
+					foreach ( $links as $id => $url ) {
+						$results[ $id ] = is_wp_error( $saved ) ? $saved->get_error_message() : __( 'WordPress did not persist the expected post content, so no repair was recorded.', 'dma-internlink-mapper' );
+					}
+					return;
+				}
+			}
+
+			if ( $elementor_changed ) {
+				update_post_meta( $post_id, '_elementor_data', wp_slash( $elementor_updated ) );
+				if ( (string) get_post_meta( $post_id, '_elementor_data', true ) !== (string) $elementor_updated ) {
+					$rollback = self::restore_repair_source( $post_id, $original, $elementor_original, $content_changed, true );
+					$message = is_wp_error( $rollback )
+						? __( 'Elementor did not persist the repair and the original source could not be restored completely. Review the saved WordPress revision before continuing.', 'dma-internlink-mapper' )
+						: __( 'Elementor did not persist the repair, so the original source content was restored and no repair was recorded.', 'dma-internlink-mapper' );
+					foreach ( $links as $id => $url ) { $results[ $id ] = $message; }
+					return;
+				}
+				self::clear_elementor_cache();
+			}
+
+			$reconciled = self::reconcile_saved_source( absint( $scan_id ), $post_id, $links );
+			if ( is_wp_error( $reconciled ) ) {
+				foreach ( $links as $id => $url ) {
+					$results[ $id ] = __( 'The page content was repaired, but the scan report could not be reconciled. Run a fresh scan before retrying this report action.', 'dma-internlink-mapper' );
+				}
+				return;
+			}
+
+			$table = ILSM_Database::table( 'links' );
+			foreach ( $links as $id => $url ) {
+				$id = absint( $id );
+				if ( ! in_array( $id, $changed, true ) ) {
+					$results[ $id ] = __( 'Not changed: exact anchor was not found in editable content.', 'dma-internlink-mapper' );
+					continue;
+				}
+				if ( self::has_editable_anchor( $post_id, $url, false ) ) {
+					$results[ $id ] = __( 'The old destination still exists in editable source content, so this occurrence was not marked resolved.', 'dma-internlink-mapper' );
+					continue;
+				}
+
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Verify the plugin-owned report row after reconciliation before claiming success.
+				$stored = $wpdb->get_row( $wpdb->prepare( 'SELECT issue_type,http_status FROM %i WHERE id=%d', $table, $id ), ARRAY_A );
+				if ( ! is_array( $stored ) || 'resolved' !== (string) ( $stored['issue_type'] ?? '' ) || 0 !== absint( $stored['http_status'] ?? 0 ) ) {
+					$results[ $id ] = __( 'The page content was repaired, but the report row could not be verified as resolved. Run a fresh scan.', 'dma-internlink-mapper' );
+					continue;
+				}
+
+				$changed_ids[] = $id;
+				$results[ $id ] = $replacement ? __( 'Broken link replaced with the verified destination.', 'dma-internlink-mapper' ) : __( 'Unlinked; visible anchor text was preserved.', 'dma-internlink-mapper' );
+			}
+		} finally {
+			ILSM_Locks::release( 'broken_edit_' . $post_id, $token );
+		}
+	}
+
+	/** Restore both supported storage backends after a failed reviewed repair. */
+	private static function restore_repair_source( $post_id, $original, $elementor_original, $restore_content, $restore_elementor ) {
+		if ( $restore_content ) {
+			$saved = wp_update_post( wp_slash( array( 'ID' => absint( $post_id ), 'post_content' => (string) $original ) ), true );
+			if ( is_wp_error( $saved ) || (string) get_post_field( 'post_content', $post_id ) !== (string) $original ) {
+				return new WP_Error( 'repair_content_rollback_failed', __( 'The original post content could not be restored.', 'dma-internlink-mapper' ) );
+			}
+		}
+		if ( $restore_elementor ) {
+			update_post_meta( absint( $post_id ), '_elementor_data', wp_slash( (string) $elementor_original ) );
+			if ( (string) get_post_meta( $post_id, '_elementor_data', true ) !== (string) $elementor_original ) {
+				return new WP_Error( 'repair_elementor_rollback_failed', __( 'The original Elementor data could not be restored.', 'dma-internlink-mapper' ) );
+			}
+			self::clear_elementor_cache();
+		}
+		return true;
+	}
+
+	/** Clear Elementor generated files only when Elementor is available and initialized. */
+	private static function clear_elementor_cache() {
+		if ( class_exists( '\\Elementor\\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
+			\Elementor\Plugin::$instance->files_manager->clear_cache();
+		}
 	}
 
 
@@ -245,7 +412,7 @@ final class ILSM_Broken_Link_Maintenance {
 			if ( self::has_editable_anchor( $post_id, $url, false ) ) { continue; }
 			$elementor_location_like = $wpdb->esc_like( 'elementor-' ) . '%';
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Immediate reconciliation write to a plugin-owned custom table; caching a write would leave the report stale.
-			$wpdb->query(
+			$written = $wpdb->query(
 				$wpdb->prepare(
 					"UPDATE %i SET issue_type='resolved',http_status=0,redirect_url='' WHERE scan_id=%d AND source_post_id=%d AND target_url_hash=%s AND (link_location='content' OR link_location='elementor' OR link_location LIKE %s)",
 					$table,
@@ -255,7 +422,11 @@ final class ILSM_Broken_Link_Maintenance {
 					$elementor_location_like
 				)
 			);
+			if ( false === $written ) {
+				return new WP_Error( 'broken_report_reconcile_failed', __( 'WordPress could not reconcile the repaired source with the broken-link report.', 'dma-internlink-mapper' ) );
+			}
 		}
+		return true;
 	}
 
 	private static function walk_elementor( &$nodes, $links, &$changed, $depth = 0, $base = '', $replacement = '' ) {
@@ -332,13 +503,13 @@ final class ILSM_Broken_Link_Maintenance {
 		$total = 0; $total_pages = 1;
 		if ( $scan_id ) {
 			$table = ILSM_Database::table( 'links' );
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Fresh prepared aggregate over allowlisted plugin tables for truthful server-side pagination.
-			$total = absint( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT l.target_url_hash) FROM {$table} l WHERE l.scan_id=%d AND (l.issue_type='broken' OR l.http_status>=400) AND NOT EXISTS (SELECT 1 FROM {$redirect_table} r WHERE r.source_url_hash=l.target_url_hash)", $scan_id ) ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned link-health data is mutable and must be read or written directly; persistent caching would be stale.
+			$total = absint( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT l.target_url_hash) FROM %i l WHERE l.scan_id=%d AND (l.issue_type='broken' OR l.http_status>=400) AND NOT EXISTS (SELECT 1 FROM %i r WHERE r.source_url_hash=l.target_url_hash)", $table, $scan_id, $redirect_table ) ) );
 			$total_pages = max( 1, (int) ceil( $total / $per_page ) );
 			$current_page = min( $current_page, $total_pages );
 			$offset = ( $current_page - 1 ) * $per_page;
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded prepared report over allowlisted plugin tables.
-			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT MIN(l.id) id,l.target_url_hash,l.target_url,COUNT(*) occurrences,COUNT(DISTINCT l.source_post_id) source_count,MAX(l.http_status) http_status,COALESCE(MAX(s.clicks),0) clicks,COALESCE(MAX(s.impressions),0) impressions,COALESCE(MAX(s.position),0) position FROM {$table} l LEFT JOIN {$search_table} s ON s.url_hash=l.target_url_hash WHERE l.scan_id=%d AND (l.issue_type='broken' OR l.http_status>=400) AND NOT EXISTS (SELECT 1 FROM {$redirect_table} r WHERE r.source_url_hash=l.target_url_hash) GROUP BY l.target_url_hash,l.target_url ORDER BY COALESCE(MAX(s.impressions),0) DESC,MAX(l.http_status)=404 DESC,MAX(l.id) DESC LIMIT %d OFFSET %d", $scan_id, $per_page, $offset ), ARRAY_A );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned link-health data is mutable and must be read or written directly; persistent caching would be stale.
+			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT MIN(l.id) id,l.target_url_hash,l.target_url,COUNT(*) occurrences,COUNT(DISTINCT l.source_post_id) source_count,MAX(l.http_status) http_status,COALESCE(MAX(s.clicks),0) clicks,COALESCE(MAX(s.impressions),0) impressions,COALESCE(MAX(s.position),0) position FROM %i l LEFT JOIN %i s ON s.url_hash=l.target_url_hash WHERE l.scan_id=%d AND (l.issue_type='broken' OR l.http_status>=400) AND NOT EXISTS (SELECT 1 FROM %i r WHERE r.source_url_hash=l.target_url_hash) GROUP BY l.target_url_hash,l.target_url ORDER BY COALESCE(MAX(s.impressions),0) DESC,MAX(l.http_status)=404 DESC,MAX(l.id) DESC LIMIT %d OFFSET %d", $table, $search_table, $scan_id, $redirect_table, $per_page, $offset ), ARRAY_A );
 		}
 		echo '<section class="ilsm-panel ilsm-broken-seo-panel"><div class="ilsm-panel-head ilsm-broken-hero"><div><span class="ilsm-broken-kicker"><i class="fa fa-shield" aria-hidden="true"></i> ' . esc_html__( 'Reviewed SEO repair', 'dma-internlink-mapper' ) . '</span><h2><i class="fa fa-chain-broken" aria-hidden="true"></i> ' . esc_html__( 'Broken Link SEO Resolution', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Resolve up to 20 verified 404s. Replacing the internal link is preferred; redirects preserve visits to an old URL.', 'dma-internlink-mapper' ) . '</p></div><button type="button" class="ilsm-btn" id="ilsm-broken-check-now"><i class="fa fa-refresh" aria-hidden="true"></i> ' . esc_html__( 'Check next safe batch', 'dma-internlink-mapper' ) . '</button></div>';
 		echo '<p><strong>' . esc_html__( 'Background monitor:', 'dma-internlink-mapper' ) . '</strong> ' . esc_html( ! empty( $settings['broken_monitor_enabled'] ) ? __( 'Enabled; checks a small batch hourly.', 'dma-internlink-mapper' ) : __( 'Disabled. Enable it in Settings.', 'dma-internlink-mapper' ) ) . ' <span id="ilsm-broken-status" aria-live="polite"></span></p>';
@@ -356,8 +527,8 @@ final class ILSM_Broken_Link_Maintenance {
 			if ( $total_pages > 1 ) { echo '<nav class="tablenav-pages" aria-label="' . esc_attr__( 'Broken links pagination', 'dma-internlink-mapper' ) . '">' . wp_kses_post( paginate_links( array( 'base' => add_query_arg( 'broken_p', '%#%', admin_url( 'admin.php?page=ilsm-broken-links' ) ), 'format' => '', 'current' => $current_page, 'total' => $total_pages, 'prev_text' => __( 'Previous', 'dma-internlink-mapper' ), 'next_text' => __( 'Next', 'dma-internlink-mapper' ) ) ) ) . '</nav>'; }
 		}
 		echo '</section>';
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter -- Bounded report from an allowlisted plugin table of URLs verified by DMA.
-		$imported_broken = $wpdb->get_results( "SELECT url,clicks,impressions,position,http_status,checked_at FROM {$search_table} WHERE http_status>=400 ORDER BY impressions DESC LIMIT 50", ARRAY_A );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned link-health data is mutable and must be read or written directly; persistent caching would be stale.
+		$imported_broken = $wpdb->get_results( $wpdb->prepare( 'SELECT url,clicks,impressions,position,http_status,checked_at FROM %i WHERE http_status>=400 ORDER BY impressions DESC LIMIT 50', $search_table ), ARRAY_A );
 		if ( $imported_broken ) { echo '<section class="ilsm-panel"><div class="ilsm-panel-head"><div><h2>' . esc_html__( 'Broken Search Console URLs', 'dma-internlink-mapper' ) . '</h2><p>' . esc_html__( 'Historical or indexed URLs verified by DMA. These have no proven editable anchor and cannot be batch-unlinked.', 'dma-internlink-mapper' ) . '</p></div></div><div class="ilsm-table-scroll"><table class="widefat striped"><thead><tr><th>' . esc_html__( 'URL', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Clicks', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Impressions', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'Position', 'dma-internlink-mapper' ) . '</th><th>' . esc_html__( 'HTTP', 'dma-internlink-mapper' ) . '</th></tr></thead><tbody>'; foreach ( $imported_broken as $item ) { echo '<tr><td><a href="' . esc_url( $item['url'] ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( $item['url'] ) . '</a></td><td>' . esc_html( number_format_i18n( absint( $item['clicks'] ) ) ) . '</td><td>' . esc_html( number_format_i18n( absint( $item['impressions'] ) ) ) . '</td><td>' . esc_html( number_format_i18n( (float) $item['position'], 2 ) ) . '</td><td>' . absint( $item['http_status'] ) . '</td></tr>'; } echo '</tbody></table></div></section>'; }
 		ILSM_Redirect_Manager::render_admin_table();
 	}

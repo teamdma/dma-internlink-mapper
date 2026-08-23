@@ -42,8 +42,11 @@ class ILSM_Link_Inserter {
         if ( 'builder' !== get_post_meta( $source_id, '_elementor_edit_mode', true ) ) {
             return new WP_Error( 'not_elementor', __( 'This source is not a saved Elementor document.', 'dma-internlink-mapper' ) );
         }
-        if ( class_exists( 'ILSM_Opportunity_Eligibility' ) && ! ILSM_Opportunity_Eligibility::is_eligible( $target_id, 'destination' ) ) {
-            return new WP_Error( 'excluded_target', __( 'This destination is excluded by the plugin eligibility rules.', 'dma-internlink-mapper' ) );
+        if ( class_exists( 'ILSM_Opportunity_Eligibility' ) ) {
+            $source_eligibility = ILSM_Opportunity_Eligibility::validate( $source_id, 'source' );
+            $target_eligibility = ILSM_Opportunity_Eligibility::validate( $target_id, 'destination' );
+            if ( is_wp_error( $source_eligibility ) ) { return $source_eligibility; }
+            if ( is_wp_error( $target_eligibility ) ) { return $target_eligibility; }
         }
 
         $url = esc_url_raw( get_permalink( $target_id ) );
@@ -85,6 +88,7 @@ class ILSM_Link_Inserter {
                 $revision_id = (int) wp_save_post_revision( $source_id );
             }
 
+            $before_hash = hash( 'sha256', (string) $source->post_content . '|' . (string) $raw );
             $saved = $this->save_located( $request, $located );
             if ( is_wp_error( $saved ) ) {
                 return $saved;
@@ -96,11 +100,29 @@ class ILSM_Link_Inserter {
                     : new WP_Error( 'verification_failed_rolled_back', __( 'The link could not be verified, so the original Elementor data was restored.', 'dma-internlink-mapper' ) );
             }
 
+            $after_raw  = (string) get_post_meta( $source_id, '_elementor_data', true );
+            $after_hash = hash( 'sha256', (string) get_post_field( 'post_content', $source_id ) . '|' . $after_raw );
+            $opportunity = (object) array(
+                'scan_id'        => ILSM_Database::latest_completed_scan_id(),
+                'id'             => 0,
+                'source_post_id' => $source_id,
+                'target_post_id' => $target_id,
+                'anchor_text'    => $anchor,
+            );
+            $history_id = $this->finalize_success( $opportunity, $located, $before_hash, $after_hash, $revision_id );
+            if ( is_wp_error( $history_id ) ) {
+                $rollback = $this->restore_source_content( $request, $located );
+                return is_wp_error( $rollback )
+                    ? new WP_Error( 'finalization_failed_rollback_failed', __( 'The Elementor content was saved, but durable insertion history could not be finalized and the original Elementor data could not be restored automatically.', 'dma-internlink-mapper' ) )
+                    : new WP_Error( 'finalization_failed_rolled_back', __( 'The Elementor content was saved, but durable insertion history could not be finalized. The original Elementor data was restored automatically.', 'dma-internlink-mapper' ) );
+            }
+
             do_action( 'ilsm_elementor_link_inserted', $source_id, $target_id, $anchor, $located );
             return array(
                 'status'      => 'inserted',
                 'message'     => __( 'The link was inserted, saved and verified in Elementor.', 'dma-internlink-mapper' ),
                 'revision_id' => $revision_id,
+                'history_id'  => absint( $history_id ),
                 'location'    => (string) ( $located['location'] ?? '' ),
                 'element_id'  => (string) ( $located['element_id'] ?? '' ),
                 'anchor'      => $anchor,
@@ -424,6 +446,9 @@ class ILSM_Link_Inserter {
             'content_location' => $located['location'],
             'location_hash'    => $located['location_hash'],
             'score'            => $score,
+            'contextual_score' => absint( $opportunity->context_score ?? $score ),
+            'strategy_score'   => absint( $opportunity->strategy_score ?? 50 ),
+            'score_reason'     => sanitize_text_field( (string) ( $opportunity->reason ?? '' ) ),
             'minimum_confidence' => $minimum,
             'insertable'       => $insertable,
             'reason_code'      => $reason,
@@ -482,8 +507,22 @@ class ILSM_Link_Inserter {
             }
             $after_post = get_post( $post->ID );
             $after_hash = hash( 'sha256', (string) $after_post->post_content . '|' . (string) get_post_meta( $post->ID, '_elementor_data', true ) );
-            $history_id = $this->record_success( $opportunity, $located, $before_hash, $after_hash, $revision_id );
-            $this->update_opportunity( $opportunity->id, 'inserted' );
+            $finalized = $this->finalize_success( $opportunity, $located, $before_hash, $after_hash, $revision_id );
+            if ( is_wp_error( $finalized ) ) {
+                $rollback = $this->restore_source_content( $opportunity, $located );
+                $error = is_wp_error( $rollback )
+                    ? new WP_Error(
+                        'finalization_failed_rollback_failed',
+                        __( 'The link was saved, but its durable insertion history could not be finalized and the original source content could not be restored automatically. Review the source revision before retrying.', 'dma-internlink-mapper' )
+                    )
+                    : new WP_Error(
+                        'finalization_failed_rolled_back',
+                        __( 'The link was saved, but its durable insertion history could not be finalized. The original source content was restored automatically and no success was recorded.', 'dma-internlink-mapper' )
+                    );
+                $this->record_failure( $opportunity, $error );
+                return $error;
+            }
+            $history_id = (int) $finalized;
             delete_transient( $this->snapshot_key( $snapshot_token ) );
             return array(
                 'status'       => 'inserted',
@@ -519,20 +558,58 @@ class ILSM_Link_Inserter {
 
     public function undo( $history_id ) {
         global $wpdb;
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        $history = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . self::history_table() . ' WHERE id=%d', absint( $history_id ) ) );
-        if ( ! $history || 'inserted' !== $history->insertion_status ) { return new WP_Error( 'invalid_history', __( 'This insertion cannot be undone.', 'dma-internlink-mapper' ) ); }
-        if ( ! current_user_can( 'ilsm_insert_links' ) || ! current_user_can( 'edit_post', $history->source_post_id ) ) { return new WP_Error( 'forbidden', __( 'You are not allowed to undo this insertion.', 'dma-internlink-mapper' ) ); }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned mutable history must be read fresh.
+        $history = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::history_table(), absint( $history_id ) ) );
+        if ( ! $history || 'inserted' !== $history->insertion_status ) {
+            return new WP_Error( 'invalid_history', __( 'This insertion cannot be undone.', 'dma-internlink-mapper' ) );
+        }
+        if ( ! current_user_can( 'ilsm_insert_links' ) || ! current_user_can( 'edit_post', $history->source_post_id ) ) {
+            return new WP_Error( 'forbidden', __( 'You are not allowed to undo this insertion.', 'dma-internlink-mapper' ) );
+        }
+
         $lock = $this->acquire_lock( (int) $history->source_post_id );
-        if ( is_wp_error( $lock ) ) { return $lock; }
+        if ( is_wp_error( $lock ) ) {
+            return $lock;
+        }
+
         try {
+            $post = get_post( $history->source_post_id );
+            if ( ! $post instanceof WP_Post ) {
+                return new WP_Error( 'source_missing', __( 'The source post no longer exists.', 'dma-internlink-mapper' ) );
+            }
+            $is_elementor = 'elementor' === (string) $history->editor_type;
+            $pre_undo_content = $is_elementor
+                ? (string) get_post_meta( $post->ID, '_elementor_data', true )
+                : (string) $post->post_content;
+
             $result = $this->remove_exact_link( $history );
-            if ( is_wp_error( $result ) ) { return $result; }
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-            $wpdb->update( self::history_table(), array( 'insertion_status' => 'undone', 'undone_at' => current_time( 'mysql', true ), 'undone_by' => get_current_user_id() ), array( 'id' => $history->id ), array( '%s','%s','%d' ), array( '%d' ) );
-            $this->update_opportunity( $history->opportunity_id, 'undone' );
-            return array( 'status' => 'undone', 'message' => __( 'The link markup was removed and the anchor text was preserved.', 'dma-internlink-mapper' ) );
-        } finally { $this->release_lock( (int) $history->source_post_id, $lock ); }
+            if ( is_wp_error( $result ) ) {
+                return $result;
+            }
+
+            $finalized = $this->finalize_undo_state( $history );
+            if ( is_wp_error( $finalized ) ) {
+                $restored = $this->restore_storage_value( $post->ID, $is_elementor, $pre_undo_content );
+                if ( is_wp_error( $restored ) ) {
+                    return new WP_Error(
+                        'undo_state_failed_restore_failed',
+                        __( 'The link markup was removed, but WordPress could not finalize the undo state or restore the previous content. Review the source revision immediately.', 'dma-internlink-mapper' )
+                    );
+                }
+                return new WP_Error(
+                    'undo_state_failed_restored',
+                    __( 'WordPress could not finalize the undo history, so the original inserted content was restored and the undo was not reported as successful.', 'dma-internlink-mapper' )
+                );
+            }
+
+            return array(
+                'status'  => 'undone',
+                'message' => __( 'The link markup was removed, the anchor text was preserved, and the undo was recorded.', 'dma-internlink-mapper' ),
+            );
+        } finally {
+            $this->release_lock( (int) $history->source_post_id, $lock );
+        }
     }
 
     private function snapshot_key( $token ) {
@@ -572,8 +649,8 @@ class ILSM_Link_Inserter {
 
     private function load_opportunity( $id ) {
         global $wpdb;
-        // phpcs:ignore PluginCheck.Security.DirectDB.UnescapedDBParameter,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Dynamic identifiers are produced by the strict ILSM_Database allowlist. Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale. SQL is assembled from fixed clauses and allowlisted identifiers before prepare().
-        $row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . ILSM_Link_Opportunities::table() . ' WHERE id=%d', absint( $id ) ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned mutable opportunities must be read fresh.
+        $row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', ILSM_Link_Opportunities::table(), absint( $id ) ) );
         if ( ! $row ) { return new WP_Error( 'not_found', __( 'Opportunity not found.', 'dma-internlink-mapper' ) ); }
         if ( (int) $row->scan_id !== ILSM_Database::latest_completed_scan_id() ) { return new WP_Error( 'stale_opportunity', __( 'This opportunity belongs to an older scan. Generate fresh opportunities.', 'dma-internlink-mapper' ) ); }
         return $row;
@@ -583,15 +660,38 @@ class ILSM_Link_Inserter {
         if ( ! is_user_logged_in() || ! current_user_can( 'ilsm_insert_links' ) || ! current_user_can( 'edit_post', $o->source_post_id ) || ! current_user_can( 'read_post', $o->target_post_id ) ) {
             return new WP_Error( 'forbidden', __( 'You are not allowed to modify this source post.', 'dma-internlink-mapper' ) );
         }
-        $source = get_post( $o->source_post_id ); $target = get_post( $o->target_post_id );
-        if ( ! $source || ! $target || $source->ID === $target->ID ) { return new WP_Error( 'invalid_posts', __( 'The source or destination is invalid.', 'dma-internlink-mapper' ) ); }
-        if ( 'publish' !== $target->post_status || post_password_required( $target ) ) { return new WP_Error( 'target_not_public', __( 'The destination is not publicly available.', 'dma-internlink-mapper' ) ); }
+
+        $source = get_post( $o->source_post_id );
+        $target = get_post( $o->target_post_id );
+        if ( ! $source instanceof WP_Post || ! $target instanceof WP_Post || $source->ID === $target->ID ) {
+            return new WP_Error( 'invalid_posts', __( 'The source or destination is invalid.', 'dma-internlink-mapper' ) );
+        }
+
         $settings = get_option( 'ilsm_settings', array() );
-        if ( ! in_array( $source->post_type, (array) ( $settings['post_types'] ?? ILSM_Activator::default_post_types() ), true ) ) { return new WP_Error( 'post_type_disabled', __( 'The source post type is not enabled in plugin settings.', 'dma-internlink-mapper' ) ); }
+        if ( ! in_array( $source->post_type, (array) ( $settings['post_types'] ?? ILSM_Activator::default_post_types() ), true ) ) {
+            return new WP_Error( 'post_type_disabled', __( 'The source post type is not enabled in plugin settings.', 'dma-internlink-mapper' ) );
+        }
+
+        // Revalidate both ends immediately before mutation. Opportunities can
+        // become stale after generation when SEO metadata, visibility, privacy
+        // assignments, or plugin eligibility settings change.
+        if ( class_exists( 'ILSM_Opportunity_Eligibility' ) ) {
+            $source_eligibility = ILSM_Opportunity_Eligibility::validate( $source, 'source' );
+            if ( is_wp_error( $source_eligibility ) ) {
+                return new WP_Error( 'source_no_longer_eligible', $source_eligibility->get_error_message() );
+            }
+            $target_eligibility = ILSM_Opportunity_Eligibility::validate( $target, 'destination' );
+            if ( is_wp_error( $target_eligibility ) ) {
+                return new WP_Error( 'target_no_longer_eligible', $target_eligibility->get_error_message() );
+            }
+        } elseif ( 'publish' !== $target->post_status || post_password_required( $target ) ) {
+            return new WP_Error( 'target_not_public', __( 'The destination is not publicly available.', 'dma-internlink-mapper' ) );
+        }
+
         return true;
     }
 
-    private function locate( $o, $_for_insert ) {
+    private function locate( $o, $for_insert ) {
         $post = get_post( $o->source_post_id );
         $url = get_permalink( $o->target_post_id );
         if ( ! $post || ! $url ) { return new WP_Error( 'invalid_content', __( 'Source content or destination URL is unavailable.', 'dma-internlink-mapper' ) ); }
@@ -729,6 +829,54 @@ class ILSM_Link_Inserter {
         return false;
     }
 
+    /**
+     * Encode an Elementor element/control path into a compact history location.
+     *
+     * The token is plugin-owned metadata only. If an unusually deep repeater path
+     * would exceed the existing VARCHAR(190), fall back to the legacy location and
+     * let safe undo discover the unique marker without truncating structured data.
+     */
+    private function elementor_location_token( $element_id, $setting_path ) {
+        $element_id = sanitize_key( (string) $element_id );
+        $json = wp_json_encode( array_values( (array) $setting_path ) );
+        if ( ! is_string( $json ) || '' === $json ) {
+            return 'widget:' . $element_id;
+        }
+        $encoded = rtrim( strtr( base64_encode( $json ), '+/', '-_' ), '=' );
+        $token = 'widget:' . $element_id . ':path:' . $encoded;
+        if ( strlen( $token ) > 180 ) {
+            return 'widget:' . $element_id;
+        }
+        return $token;
+    }
+
+    /** Decode a precise Elementor history location when one is available. */
+    private function elementor_location_parts( $location ) {
+        $location = (string) $location;
+        if ( ! preg_match( '/^widget:([a-z0-9_-]+):path:([A-Za-z0-9_-]+)$/', $location, $matches ) ) {
+            return null;
+        }
+        $encoded = (string) $matches[2];
+        $padding = strlen( $encoded ) % 4;
+        if ( $padding ) {
+            $encoded .= str_repeat( '=', 4 - $padding );
+        }
+        $decoded = base64_decode( strtr( $encoded, '-_', '+/' ), true );
+        $path = is_string( $decoded ) ? json_decode( $decoded, true ) : null;
+        if ( ! is_array( $path ) || empty( $path ) ) {
+            return null;
+        }
+        foreach ( $path as $key ) {
+            if ( ! is_string( $key ) && ! is_int( $key ) ) {
+                return null;
+            }
+        }
+        return array(
+            'element_id'   => sanitize_key( (string) $matches[1] ),
+            'setting_path' => array_values( $path ),
+        );
+    }
+
     private function elementor_value_is_dynamic( $settings, $path ) {
         return ILSM_Elementor_Controls::is_dynamic( $settings, $path );
     }
@@ -753,6 +901,7 @@ class ILSM_Link_Inserter {
                         $found['element_id'] = (string) ( $el['id'] ?? '' );
                         $found['setting_path'] = $control['path'];
                         $found['setting_key'] = (string) ( $control['path'][0] ?? '' );
+                        $found['location'] = $this->elementor_location_token( (string) ( $el['id'] ?? '' ), (array) $control['path'] );
                         $found['control_type'] = (string) ( $control['type'] ?? '' );
                         $found['control_label'] = (string) ( $control['label'] ?? ( $control['path'][0] ?? '' ) );
                         $found['widget_type'] = $widget_type;
@@ -786,19 +935,150 @@ class ILSM_Link_Inserter {
         if ( ! empty( $located['already_linked'] ) ) {
             return new WP_Error( 'already_linked', __( 'The source already links to this destination.', 'dma-internlink-mapper' ) );
         }
-        return array(
-            'element_id'    => (string) ( $located['element_id'] ?? '' ),
-            'widget_type'   => (string) ( $located['widget_type'] ?? '' ),
-            'setting_path'  => array_values( (array) ( $located['setting_path'] ?? array() ) ),
-            'setting_key'   => (string) ( $located['setting_key'] ?? ( $located['setting_path'][0] ?? '' ) ),
-            'control_type'  => (string) ( $located['control_type'] ?? '' ),
-            'control_label' => (string) ( $located['control_label'] ?? '' ),
-            'location'      => (string) ( $located['location'] ?? '' ),
-            'anchor'        => $anchor,
-            'original_html' => (string) ( $located['html'] ?? '' ),
-            'new_html'      => (string) ( $located['new_html'] ?? '' ),
-            'target_url'    => esc_url_raw( get_permalink( $target_id ) ),
+        $setting_path  = array_values( (array) ( $located['setting_path'] ?? array() ) );
+        $original_html = (string) ( $located['html'] ?? '' );
+        $finalize_token = wp_generate_password( 40, false, false );
+        set_transient(
+            'ilsm_elementor_finalize_' . hash( 'sha256', $finalize_token ),
+            array(
+                'user_id'              => get_current_user_id(),
+                'source_post_id'       => $source_id,
+                'target_post_id'       => $target_id,
+                'anchor'               => sanitize_text_field( (string) ( $located['matched_anchor'] ?? $anchor ) ),
+                'target_url'           => esc_url_raw( get_permalink( $target_id ) ),
+                'element_id'           => (string) ( $located['element_id'] ?? '' ),
+                'setting_path'         => $setting_path,
+                'location'             => (string) ( $located['location'] ?? '' ),
+                'original_html_hash'   => hash( 'sha256', $original_html ),
+                'source_before_hash'   => hash( 'sha256', (string) $raw ),
+                'created_at'           => time(),
+            ),
+            self::SNAPSHOT_TTL
         );
+
+        return array(
+            'element_id'     => (string) ( $located['element_id'] ?? '' ),
+            'widget_type'    => (string) ( $located['widget_type'] ?? '' ),
+            'setting_path'   => $setting_path,
+            'setting_key'    => (string) ( $located['setting_key'] ?? ( $located['setting_path'][0] ?? '' ) ),
+            'control_type'   => (string) ( $located['control_type'] ?? '' ),
+            'control_label'  => (string) ( $located['control_label'] ?? '' ),
+            'location'       => (string) ( $located['location'] ?? '' ),
+            'anchor'         => $anchor,
+            'matched_anchor' => sanitize_text_field( (string) ( $located['matched_anchor'] ?? $anchor ) ),
+            'original_html'  => $original_html,
+            'new_html'       => (string) ( $located['new_html'] ?? '' ),
+            'target_url'     => esc_url_raw( get_permalink( $target_id ) ),
+            'finalize_token' => $finalize_token,
+        );
+    }
+
+    /**
+     * Finalize an Elementor editor insertion only after the exact saved control
+     * contains the plugin marker link. This turns the editor-side save into a
+     * durable auditable insertion without rewriting Elementor data from PHP.
+     *
+     * @param string $token Opaque preview/finalization token.
+     * @return array|WP_Error
+     */
+    public function finalize_elementor_editor_insertion( $token ) {
+        $token = sanitize_text_field( (string) $token );
+        if ( '' === $token ) {
+            return new WP_Error( 'finalize_token_missing', __( 'The Elementor insertion verification token is missing.', 'dma-internlink-mapper' ) );
+        }
+
+        $snapshot = get_transient( 'ilsm_elementor_finalize_' . hash( 'sha256', $token ) );
+        if ( ! is_array( $snapshot ) || absint( $snapshot['user_id'] ?? 0 ) !== get_current_user_id() ) {
+            return new WP_Error( 'finalize_token_invalid', __( 'The Elementor insertion verification expired or does not belong to this user.', 'dma-internlink-mapper' ) );
+        }
+
+        $source_id = absint( $snapshot['source_post_id'] ?? 0 );
+        $target_id = absint( $snapshot['target_post_id'] ?? 0 );
+        $anchor    = sanitize_text_field( (string) ( $snapshot['anchor'] ?? '' ) );
+        $url       = esc_url_raw( (string) ( $snapshot['target_url'] ?? '' ) );
+        $element_id = sanitize_text_field( (string) ( $snapshot['element_id'] ?? '' ) );
+        $setting_path = array_values( (array) ( $snapshot['setting_path'] ?? array() ) );
+
+        if ( ! $source_id || ! $target_id || '' === $anchor || '' === $url || '' === $element_id || empty( $setting_path ) ) {
+            return new WP_Error( 'finalize_snapshot_invalid', __( 'The Elementor insertion verification data is incomplete.', 'dma-internlink-mapper' ) );
+        }
+        if ( ! current_user_can( 'ilsm_insert_links' ) || ! current_user_can( 'edit_post', $source_id ) || ! current_user_can( 'read_post', $target_id ) ) {
+            return new WP_Error( 'forbidden', __( 'You are not allowed to finalize this insertion.', 'dma-internlink-mapper' ) );
+        }
+
+        $source_eligibility = ILSM_Opportunity_Eligibility::validate( $source_id, 'source' );
+        $target_eligibility = ILSM_Opportunity_Eligibility::validate( $target_id, 'destination' );
+        if ( is_wp_error( $source_eligibility ) ) { return $source_eligibility; }
+        if ( is_wp_error( $target_eligibility ) ) { return $target_eligibility; }
+
+        $raw = (string) get_post_meta( $source_id, '_elementor_data', true );
+        $data = json_decode( $raw, true );
+        if ( ! is_array( $data ) ) {
+            $data = json_decode( wp_unslash( $raw ), true );
+        }
+        if ( ! is_array( $data ) ) {
+            return new WP_Error( 'elementor_data_invalid', __( 'Saved Elementor data could not be decoded for verification.', 'dma-internlink-mapper' ) );
+        }
+
+        $saved_html = $this->elementor_control_value_by_id( $data, $element_id, $setting_path );
+        if ( ! is_string( $saved_html ) || ! $this->html_has_verified_link( $saved_html, $url, $anchor ) ) {
+            return new WP_Error( 'elementor_exact_verification_failed', __( 'The exact Elementor control does not contain the verified inserted link.', 'dma-internlink-mapper' ) );
+        }
+        if ( hash_equals( (string) ( $snapshot['original_html_hash'] ?? '' ), hash( 'sha256', $saved_html ) ) ) {
+            return new WP_Error( 'elementor_no_change', __( 'The Elementor control did not change after insertion.', 'dma-internlink-mapper' ) );
+        }
+
+        $opportunity = (object) array(
+            'scan_id'        => ILSM_Database::latest_completed_scan_id(),
+            'id'             => 0,
+            'source_post_id' => $source_id,
+            'target_post_id' => $target_id,
+            'anchor_text'    => $anchor,
+        );
+        $located = array(
+            'editor_type'   => 'elementor',
+            'location'      => sanitize_text_field( (string) ( $snapshot['location'] ?? ( 'elementor:' . $element_id ) ) ),
+            'location_hash' => sanitize_text_field( (string) ( $snapshot['original_html_hash'] ?? '' ) ),
+        );
+        $history_id = $this->finalize_success(
+            $opportunity,
+            $located,
+            sanitize_text_field( (string) ( $snapshot['source_before_hash'] ?? '' ) ),
+            hash( 'sha256', $raw ),
+            0
+        );
+        if ( is_wp_error( $history_id ) ) {
+            return $history_id;
+        }
+
+        delete_transient( 'ilsm_elementor_finalize_' . hash( 'sha256', $token ) );
+        return array(
+            'status'       => 'inserted',
+            'history_id'   => absint( $history_id ),
+            'source_id'    => $source_id,
+            'target_id'    => $target_id,
+            'anchor'       => $anchor,
+            'target_url'   => $url,
+            'element_id'   => $element_id,
+            'setting_path' => $setting_path,
+            'persisted'    => true,
+        );
+    }
+
+    /** Find one exact saved Elementor control value by element ID and setting path. */
+    private function elementor_control_value_by_id( $nodes, $element_id, $setting_path ) {
+        foreach ( (array) $nodes as $node ) {
+            if ( ! is_array( $node ) ) { continue; }
+            if ( (string) ( $node['id'] ?? '' ) === (string) $element_id && isset( $node['settings'] ) && is_array( $node['settings'] ) ) {
+                $value = $this->elementor_get_path( $node['settings'], $setting_path );
+                return is_string( $value ) ? $value : null;
+            }
+            if ( ! empty( $node['elements'] ) && is_array( $node['elements'] ) ) {
+                $value = $this->elementor_control_value_by_id( $node['elements'], $element_id, $setting_path );
+                if ( null !== $value ) { return $value; }
+            }
+        }
+        return null;
     }
 
     private function locate_html( $html, $o, $url, $editor_type, $location ) {
@@ -833,6 +1113,7 @@ class ILSM_Link_Inserter {
             'state' => 'ready',
             'warnings' => $result['warnings'],
             'match_score' => $result['score'],
+            'matched_anchor' => (string) ( $result['matched_anchor'] ?? $o->anchor_text ),
         );
     }
 
@@ -970,6 +1251,7 @@ class ILSM_Link_Inserter {
             'preview_html' => $preview,
             'score' => (int) $candidate['score'],
             'node_index' => (int) $candidate['node_index'],
+            'matched_anchor' => (string) $found,
             'warnings' => $warnings,
         );
     }
@@ -1070,7 +1352,7 @@ class ILSM_Link_Inserter {
 
     private function verify_inserted( $o, $located ) {
         $url    = esc_url_raw( get_permalink( $o->target_post_id ) );
-        $anchor = trim( wp_strip_all_tags( (string) $o->anchor_text ) );
+        $anchor = trim( wp_strip_all_tags( (string) ( $located['matched_anchor'] ?? $o->anchor_text ) ) );
         if ( '' === $url || '' === $anchor ) { return false; }
 
         if ( 'elementor' === $located['editor_type'] ) {
@@ -1109,9 +1391,95 @@ class ILSM_Link_Inserter {
 
     /** Verify one exact plugin marker link in normal HTML. */
     private function html_has_verified_link( $html, $url, $anchor ) {
-        $pattern = '/<a\b(?=[^>]*\bdata-ilsm-insertion=["\']1["\'])(?=[^>]*\bhref=["\']' . preg_quote( $url, '/' ) . '["\'])[^>]*>\s*' . preg_quote( $anchor, '/' ) . '\s*<\/a>/iu';
-        return 1 === preg_match( $pattern, (string) $html );
+        return $this->count_verified_marker_links( $html, $url, $anchor ) > 0;
     }
+
+    /**
+     * Count exact plugin-owned marker links without relying on raw substring matches.
+     *
+     * The href is normalized through the same URL normalizer used by the crawler,
+     * and visible text is compared after entity decoding/whitespace normalization.
+     * Nested markup is intentionally rejected because the inserter creates a plain
+     * text anchor; changed markup makes automatic undo unsafe.
+     */
+    private function count_verified_marker_links( $html, $url, $anchor ) {
+        $html   = (string) $html;
+        $target = ILSM_Link_Normalizer::normalize( (string) $url, home_url( '/' ) );
+        $anchor = $this->normalize_marker_text( $anchor );
+        if ( '' === $html || ! $target || '' === $anchor ) {
+            return 0;
+        }
+
+        $pattern = '/<a\b(?=[^>]*\bdata-ilsm-insertion\s*=\s*(["\'])1\1)[^>]*\bhref\s*=\s*(["\'])(.*?)\2[^>]*>(.*?)<\/a>/isu';
+        if ( ! preg_match_all( $pattern, $html, $matches, PREG_SET_ORDER ) ) {
+            return 0;
+        }
+
+        $count = 0;
+        foreach ( $matches as $match ) {
+            $href = html_entity_decode( (string) ( $match[3] ?? '' ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+            $normalized = ILSM_Link_Normalizer::normalize( $href, home_url( '/' ) );
+            $inner = (string) ( $match[4] ?? '' );
+            if ( ! $normalized || untrailingslashit( $normalized ) !== untrailingslashit( $target ) ) {
+                continue;
+            }
+            if ( preg_match( '/<[^>]+>/', $inner ) ) {
+                continue;
+            }
+            if ( $this->normalize_marker_text( $inner ) === $anchor ) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    /** Normalize plain marker text while preserving its real punctuation/case. */
+    private function normalize_marker_text( $text ) {
+        $text = html_entity_decode( (string) $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        $text = preg_replace( '/\s+/u', ' ', $text );
+        return trim( is_string( $text ) ? $text : '' );
+    }
+
+    /**
+     * Remove one exact plugin marker link from one HTML value and keep its original
+     * encoded visible text. The surrounding HTML is never reparsed or reformatted.
+     *
+     * @param string $html   HTML value.
+     * @param string $url    Destination URL.
+     * @param string $anchor Exact visible anchor stored in history.
+     * @param int    $count  Number of exact marker links encountered.
+     * @return string
+     */
+    private function remove_verified_marker_link_from_html( $html, $url, $anchor, &$count ) {
+        $html   = (string) $html;
+        $target = ILSM_Link_Normalizer::normalize( (string) $url, home_url( '/' ) );
+        $anchor = $this->normalize_marker_text( $anchor );
+        $count  = 0;
+        if ( '' === $html || ! $target || '' === $anchor ) {
+            return $html;
+        }
+
+        $pattern = '/<a\b(?=[^>]*\bdata-ilsm-insertion\s*=\s*(["\'])1\1)[^>]*\bhref\s*=\s*(["\'])(.*?)\2[^>]*>(.*?)<\/a>/isu';
+        $result = preg_replace_callback(
+            $pattern,
+            function( $match ) use ( $target, $anchor, &$count ) {
+                $href = html_entity_decode( (string) ( $match[3] ?? '' ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+                $normalized = ILSM_Link_Normalizer::normalize( $href, home_url( '/' ) );
+                $inner = (string) ( $match[4] ?? '' );
+                if ( ! $normalized || untrailingslashit( $normalized ) !== untrailingslashit( $target ) ) {
+                    return $match[0];
+                }
+                if ( preg_match( '/<[^>]+>/', $inner ) || $this->normalize_marker_text( $inner ) !== $anchor ) {
+                    return $match[0];
+                }
+                $count++;
+                return $inner;
+            },
+            $html
+        );
+        return is_string( $result ) ? $result : $html;
+    }
+
     private function html_has_target( $html, $url ) {
         $target = untrailingslashit( esc_url_raw( (string) $url ) );
         if ( '' === $target || false === stripos( (string) $html, 'href' ) ) {
@@ -1141,26 +1509,341 @@ class ILSM_Link_Inserter {
         return (bool) preg_match( '/<a\b[^>]*href=["\']' . $quoted . '\/?["\']/i', (string) $html );
     }
 
-    private function remove_exact_link( $h ) {
-        $post=get_post($h->source_post_id); if(!$post){return new WP_Error('source_missing',__('The source post no longer exists.','dma-internlink-mapper'));}
-        $url=esc_url_raw($h->destination_url); $anchor=(string)$h->anchor_text;
-        $pattern='/<a\b(?=[^>]*data-ilsm-insertion=["\']1["\'])(?=[^>]*href=["\']'.preg_quote($url,'/').'["\'])[^>]*>'.preg_quote($anchor,'/').'<\/a>/iu';
-        $is_elementor='elementor'===$h->editor_type; $content=$is_elementor?(string)get_post_meta($post->ID,'_elementor_data',true):(string)$post->post_content;
-        if(1!==preg_match_all($pattern,$content)){return new WP_Error('unsafe_undo',__('Safe undo is unavailable because the exact inserted link changed or occurs more than once. Use the WordPress revision instead.','dma-internlink-mapper'));}
-        $new=preg_replace($pattern,$anchor,$content,1);
-        if($is_elementor){update_post_meta($post->ID,'_elementor_data',wp_slash($new));if(class_exists('\\Elementor\\Plugin')){\Elementor\Plugin::$instance->files_manager->clear_cache();}}
-        else{$saved=wp_update_post(array('ID'=>$post->ID,'post_content'=>$new),true);if(is_wp_error($saved)){return $saved;}}
-        clean_post_cache($post->ID); return true;
+    private function remove_exact_link( $history ) {
+        $post = get_post( $history->source_post_id );
+        if ( ! $post instanceof WP_Post ) {
+            return new WP_Error( 'source_missing', __( 'The source post no longer exists.', 'dma-internlink-mapper' ) );
+        }
+
+        $url    = esc_url_raw( $history->destination_url );
+        $anchor = (string) $history->anchor_text;
+        if ( '' === $url || '' === $this->normalize_marker_text( $anchor ) ) {
+            return new WP_Error( 'unsafe_undo', __( 'Safe undo is unavailable because the stored insertion identity is incomplete.', 'dma-internlink-mapper' ) );
+        }
+
+        $is_elementor = 'elementor' === (string) $history->editor_type;
+        if ( $is_elementor ) {
+            $raw = (string) get_post_meta( $post->ID, '_elementor_data', true );
+            $data = json_decode( $raw, true );
+            if ( ! is_array( $data ) ) {
+                $data = json_decode( wp_unslash( $raw ), true );
+            }
+            if ( ! is_array( $data ) ) {
+                return new WP_Error( 'elementor_data_invalid', __( 'Safe undo is unavailable because the saved Elementor data could not be decoded.', 'dma-internlink-mapper' ) );
+            }
+
+            $parts = $this->elementor_location_parts( $history->content_location ?? '' );
+            if ( is_array( $parts ) ) {
+                $current = $this->elementor_control_value_by_id( $data, $parts['element_id'], $parts['setting_path'] );
+                if ( ! is_string( $current ) ) {
+                    return new WP_Error( 'unsafe_undo', __( 'Safe undo is unavailable because the original Elementor control no longer exists.', 'dma-internlink-mapper' ) );
+                }
+                $count = 0;
+                $updated = $this->remove_verified_marker_link_from_html( $current, $url, $anchor, $count );
+                if ( 1 !== $count || $updated === $current ) {
+                    return new WP_Error( 'unsafe_undo', __( 'Safe undo is unavailable because the exact inserted Elementor link changed or is no longer unique in its control.', 'dma-internlink-mapper' ) );
+                }
+                if ( ! $this->set_elementor_html( $data, $parts['element_id'], $parts['setting_path'], $updated ) ) {
+                    return new WP_Error( 'unsafe_undo', __( 'Safe undo could not update the original Elementor control.', 'dma-internlink-mapper' ) );
+                }
+            } else {
+                /*
+                 * Backward-compatible path for history created before precise
+                 * Elementor locations were stored. Discover the exact plugin
+                 * marker in supported non-dynamic text controls and refuse to
+                 * guess unless it is unique across the saved document.
+                 */
+                $candidates = array();
+                $this->find_elementor_marker_candidates( $data, $url, $anchor, $candidates );
+                if ( 1 !== count( $candidates ) ) {
+                    return new WP_Error( 'unsafe_undo', __( 'Safe undo is unavailable because the exact inserted Elementor link changed or occurs more than once. Use the WordPress revision instead.', 'dma-internlink-mapper' ) );
+                }
+                $candidate = $candidates[0];
+                if ( ! $this->set_elementor_html( $data, $candidate['element_id'], $candidate['setting_path'], $candidate['new_html'] ) ) {
+                    return new WP_Error( 'unsafe_undo', __( 'Safe undo could not update the original Elementor control.', 'dma-internlink-mapper' ) );
+                }
+            }
+
+            $encoded = wp_json_encode( $data );
+            if ( ! is_string( $encoded ) || '' === $encoded ) {
+                return new WP_Error( 'elementor_encode_failed', __( 'Safe undo could not serialize the restored Elementor document.', 'dma-internlink-mapper' ) );
+            }
+            return $this->restore_storage_value( $post->ID, true, $encoded );
+        }
+
+        $content = (string) $post->post_content;
+        $count   = 0;
+        $new     = $this->remove_verified_marker_link_from_html( $content, $url, $anchor, $count );
+        if ( 1 !== $count ) {
+            return new WP_Error( 'unsafe_undo', __( 'Safe undo is unavailable because the exact inserted link changed or occurs more than once. Use the WordPress revision instead.', 'dma-internlink-mapper' ) );
+        }
+        if ( $new === $content ) {
+            return new WP_Error( 'undo_no_change', __( 'The exact inserted link could not be removed safely.', 'dma-internlink-mapper' ) );
+        }
+        return $this->restore_storage_value( $post->ID, false, $new );
     }
 
-    private function acquire_lock($post_id){return ILSM_Locks::acquire('insert_'.absint($post_id),self::LOCK_TTL);}
-    private function release_lock($post_id,$token){ILSM_Locks::release('insert_'.absint($post_id),$token);}
-    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned custom tables require direct database access. Mutable scan data must be read fresh; persistent object caching would be stale.
-    private function update_opportunity($id,$status){global $wpdb;$wpdb->update(ILSM_Link_Opportunities::table(),array('status'=>$status,'updated_at'=>current_time('mysql',true)),array('id'=>(int)$id),array('%s','%s'),array('%d'));}
-    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Plugin-owned custom tables require direct database access.
-    private function record_success($o,$l,$before,$after,$revision){global $wpdb;$wpdb->insert(self::history_table(),array('scan_id'=>$o->scan_id,'opportunity_id'=>$o->id,'source_post_id'=>$o->source_post_id,'target_post_id'=>$o->target_post_id,'user_id'=>get_current_user_id(),'anchor_text'=>$o->anchor_text,'destination_url'=>get_permalink($o->target_post_id),'editor_type'=>$l['editor_type'],'content_location'=>$l['location'],'location_hash'=>$l['location_hash'],'before_hash'=>$before,'after_hash'=>$after,'revision_id'=>$revision,'insertion_status'=>'inserted','error_code'=>'','error_message'=>'','created_at'=>current_time('mysql',true)),array('%d','%d','%d','%d','%d','%s','%s','%s','%s','%s','%s','%s','%d','%s','%s','%s','%s'));return (int)$wpdb->insert_id;}
-    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Plugin-owned custom tables require direct database access.
-    private function record_failure($o,$error){global $wpdb;$wpdb->insert(self::history_table(),array('scan_id'=>$o->scan_id,'opportunity_id'=>$o->id,'source_post_id'=>$o->source_post_id,'target_post_id'=>$o->target_post_id,'user_id'=>get_current_user_id(),'anchor_text'=>$o->anchor_text,'destination_url'=>get_permalink($o->target_post_id),'editor_type'=>'unknown','content_location'=>'','location_hash'=>'','before_hash'=>'','after_hash'=>'','revision_id'=>0,'insertion_status'=>'failed','error_code'=>sanitize_key($error->get_error_code()),'error_message'=>sanitize_text_field($error->get_error_message()),'created_at'=>current_time('mysql',true)));$this->update_opportunity($o->id,'failed');}
+    /** Find exact marker candidates in supported saved Elementor controls. */
+    private function find_elementor_marker_candidates( $nodes, $url, $anchor, &$candidates ) {
+        foreach ( (array) $nodes as $node ) {
+            if ( ! is_array( $node ) ) {
+                continue;
+            }
+            if ( isset( $node['widgetType'], $node['settings'] ) && is_array( $node['settings'] ) ) {
+                $widget_type = sanitize_key( (string) $node['widgetType'] );
+                foreach ( $this->elementor_text_controls( $widget_type, $node['settings'] ) as $control ) {
+                    if ( $this->elementor_value_is_dynamic( $node['settings'], $control['path'] ) ) {
+                        continue;
+                    }
+                    $count = 0;
+                    $new_html = $this->remove_verified_marker_link_from_html( (string) $control['value'], $url, $anchor, $count );
+                    if ( 1 === $count ) {
+                        $candidates[] = array(
+                            'element_id'   => (string) ( $node['id'] ?? '' ),
+                            'setting_path' => array_values( (array) $control['path'] ),
+                            'new_html'     => $new_html,
+                        );
+                    } elseif ( $count > 1 ) {
+                        /*
+                         * Represent every extra occurrence so the caller refuses
+                         * to guess. Automatic undo must never choose one of several.
+                         */
+                        for ( $i = 0; $i < $count; $i++ ) {
+                            $candidates[] = array( 'ambiguous' => true );
+                        }
+                    }
+                }
+            }
+            if ( ! empty( $node['elements'] ) && is_array( $node['elements'] ) ) {
+                $this->find_elementor_marker_candidates( $node['elements'], $url, $anchor, $candidates );
+            }
+        }
+    }
+
+    /** Write an exact storage value and verify the persisted value afterwards. */
+    private function restore_storage_value( $post_id, $is_elementor, $content ) {
+        $post_id = absint( $post_id );
+        $content = (string) $content;
+        if ( ! $post_id ) {
+            return new WP_Error( 'invalid_source', __( 'The source post is invalid.', 'dma-internlink-mapper' ) );
+        }
+
+        if ( $is_elementor ) {
+            $updated = update_post_meta( $post_id, '_elementor_data', wp_slash( $content ) );
+            $stored  = (string) get_post_meta( $post_id, '_elementor_data', true );
+            if ( false === $updated && $stored !== $content ) {
+                return new WP_Error( 'elementor_save_failed', __( 'WordPress could not save the Elementor content.', 'dma-internlink-mapper' ) );
+            }
+            if ( $stored !== $content ) {
+                return new WP_Error( 'elementor_save_mismatch', __( 'The saved Elementor content did not match the verified update.', 'dma-internlink-mapper' ) );
+            }
+            if ( class_exists( '\Elementor\Plugin' ) && isset( \Elementor\Plugin::$instance->files_manager ) ) {
+                \Elementor\Plugin::$instance->files_manager->clear_cache();
+            }
+            clean_post_cache( $post_id );
+            return true;
+        }
+
+        $saved = wp_update_post( array( 'ID' => $post_id, 'post_content' => $content ), true );
+        if ( is_wp_error( $saved ) ) {
+            return $saved;
+        }
+        clean_post_cache( $post_id );
+        if ( (string) get_post_field( 'post_content', $post_id ) !== $content ) {
+            return new WP_Error( 'post_save_mismatch', __( 'The saved post content did not match the verified update.', 'dma-internlink-mapper' ) );
+        }
+        return true;
+    }
+
+    private function acquire_lock( $post_id ) {
+        return ILSM_Locks::acquire( 'insert_' . absint( $post_id ), self::LOCK_TTL );
+    }
+
+    private function release_lock( $post_id, $token ) {
+        ILSM_Locks::release( 'insert_' . absint( $post_id ), $token );
+    }
+
+    /** Persist one opportunity status and verify the durable state. */
+    private function update_opportunity( $id, $status ) {
+        global $wpdb;
+        $id     = absint( $id );
+        $status = sanitize_key( $status );
+        if ( ! $id ) {
+            return true;
+        }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Plugin-owned mutable opportunity state must be written and verified immediately.
+        $updated = $wpdb->update(
+            ILSM_Link_Opportunities::table(),
+            array( 'status' => $status, 'updated_at' => current_time( 'mysql', true ) ),
+            array( 'id' => $id ),
+            array( '%s', '%s' ),
+            array( '%d' )
+        );
+        if ( false === $updated ) {
+            return new WP_Error( 'opportunity_state_write_failed', __( 'WordPress could not update the opportunity state.', 'dma-internlink-mapper' ) );
+        }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-back verifies durable state after the write.
+        $stored = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM %i WHERE id=%d', ILSM_Link_Opportunities::table(), $id ) );
+        if ( $stored !== $status ) {
+            return new WP_Error( 'opportunity_state_verify_failed', __( 'The opportunity state could not be verified after saving.', 'dma-internlink-mapper' ) );
+        }
+        return true;
+    }
+
+    /** Insert durable history and return its primary key only after verification. */
+    private function record_success( $opportunity, $located, $before, $after, $revision ) {
+        global $wpdb;
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Plugin-owned insertion history is a required durable write.
+        $inserted = $wpdb->insert(
+            self::history_table(),
+            array(
+                'scan_id'          => absint( $opportunity->scan_id ),
+                'opportunity_id'   => absint( $opportunity->id ),
+                'source_post_id'   => absint( $opportunity->source_post_id ),
+                'target_post_id'   => absint( $opportunity->target_post_id ),
+                'user_id'          => get_current_user_id(),
+                'anchor_text'      => sanitize_text_field( (string) ( $located['matched_anchor'] ?? $opportunity->anchor_text ) ),
+                'destination_url'  => esc_url_raw( get_permalink( $opportunity->target_post_id ) ),
+                'editor_type'      => sanitize_key( (string) $located['editor_type'] ),
+                'content_location' => sanitize_text_field( (string) $located['location'] ),
+                'location_hash'    => sanitize_text_field( (string) $located['location_hash'] ),
+                'before_hash'      => sanitize_text_field( (string) $before ),
+                'after_hash'       => sanitize_text_field( (string) $after ),
+                'revision_id'      => absint( $revision ),
+                'insertion_status' => 'inserted',
+                'error_code'       => '',
+                'error_message'    => '',
+                'created_at'       => current_time( 'mysql', true ),
+            ),
+            array( '%d','%d','%d','%d','%d','%s','%s','%s','%s','%s','%s','%s','%d','%s','%s','%s','%s' )
+        );
+        $history_id = (int) $wpdb->insert_id;
+        if ( false === $inserted || $history_id <= 0 ) {
+            return new WP_Error( 'history_write_failed', __( 'WordPress could not write the durable insertion history.', 'dma-internlink-mapper' ) );
+        }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Required read-back verifies the inserted audit row.
+        $stored = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i WHERE id=%d AND insertion_status=%s', self::history_table(), $history_id, 'inserted' ) );
+        if ( $stored !== $history_id ) {
+            return new WP_Error( 'history_verify_failed', __( 'The insertion history could not be verified after saving.', 'dma-internlink-mapper' ) );
+        }
+        return $history_id;
+    }
+
+    /** Commit history plus opportunity state as one plugin-owned finalization step. */
+    private function finalize_success( $opportunity, $located, $before, $after, $revision ) {
+        global $wpdb;
+        $transaction = ILSM_Database::begin_transaction();
+        $history_id  = 0;
+
+        $recorded = $this->record_success( $opportunity, $located, $before, $after, $revision );
+        if ( is_wp_error( $recorded ) ) {
+            if ( $transaction ) { ILSM_Database::rollback(); }
+            return $recorded;
+        }
+        $history_id = (int) $recorded;
+
+        $state = $this->update_opportunity( $opportunity->id, 'inserted' );
+        if ( is_wp_error( $state ) ) {
+            if ( $transaction ) {
+                ILSM_Database::rollback();
+            } else {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Compensating cleanup prevents orphaned success history when transactions are unavailable.
+                $wpdb->delete( self::history_table(), array( 'id' => $history_id ), array( '%d' ) );
+            }
+            return $state;
+        }
+
+        if ( $transaction && ! ILSM_Database::commit() ) {
+            ILSM_Database::rollback();
+            return new WP_Error( 'finalization_commit_failed', __( 'WordPress could not commit the insertion history safely.', 'dma-internlink-mapper' ) );
+        }
+        return $history_id;
+    }
+
+    /** Finalize a durable undo state without claiming success on partial writes. */
+    private function finalize_undo_state( $history ) {
+        global $wpdb;
+        $transaction = ILSM_Database::begin_transaction();
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Conditional state transition prevents duplicate concurrent undo success.
+        $updated = $wpdb->query(
+            $wpdb->prepare(
+                'UPDATE %i SET insertion_status=%s, undone_at=%s, undone_by=%d WHERE id=%d AND insertion_status=%s',
+                self::history_table(),
+                'undone',
+                current_time( 'mysql', true ),
+                get_current_user_id(),
+                absint( $history->id ),
+                'inserted'
+            )
+        );
+        if ( 1 !== (int) $updated ) {
+            if ( $transaction ) { ILSM_Database::rollback(); }
+            return new WP_Error( 'undo_history_write_failed', __( 'WordPress could not record the undo state.', 'dma-internlink-mapper' ) );
+        }
+
+        if ( absint( $history->opportunity_id ) ) {
+            $state = $this->update_opportunity( $history->opportunity_id, 'undone' );
+            if ( is_wp_error( $state ) ) {
+                if ( $transaction ) {
+                    ILSM_Database::rollback();
+                } else {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Compensate the history state when a transaction is unavailable.
+                    $wpdb->update(
+                        self::history_table(),
+                        array( 'insertion_status' => 'inserted', 'undone_at' => null, 'undone_by' => 0 ),
+                        array( 'id' => absint( $history->id ) ),
+                        array( '%s', '%s', '%d' ),
+                        array( '%d' )
+                    );
+                }
+                return $state;
+            }
+        }
+
+        if ( $transaction && ! ILSM_Database::commit() ) {
+            ILSM_Database::rollback();
+            return new WP_Error( 'undo_commit_failed', __( 'WordPress could not commit the undo history safely.', 'dma-internlink-mapper' ) );
+        }
+        return true;
+    }
+
+    /** Best-effort failure audit. The original error is still returned even if logging fails. */
+    private function record_failure( $opportunity, $error ) {
+        global $wpdb;
+        $settings = wp_parse_args( get_option( 'ilsm_settings', array() ), array( 'insert_audit_log' => 1 ) );
+        if ( empty( $settings['insert_audit_log'] ) ) {
+            $this->update_opportunity( $opportunity->id, 'failed' );
+            return;
+        }
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Optional failed-attempt diagnostics must never hide the original operation error.
+        $wpdb->insert(
+            self::history_table(),
+            array(
+                'scan_id'          => absint( $opportunity->scan_id ),
+                'opportunity_id'   => absint( $opportunity->id ),
+                'source_post_id'   => absint( $opportunity->source_post_id ),
+                'target_post_id'   => absint( $opportunity->target_post_id ),
+                'user_id'          => get_current_user_id(),
+                'anchor_text'      => sanitize_text_field( (string) $opportunity->anchor_text ),
+                'destination_url'  => esc_url_raw( get_permalink( $opportunity->target_post_id ) ),
+                'editor_type'      => 'unknown',
+                'content_location' => '',
+                'location_hash'    => '',
+                'before_hash'      => '',
+                'after_hash'       => '',
+                'revision_id'      => 0,
+                'insertion_status' => 'failed',
+                'error_code'       => sanitize_key( $error->get_error_code() ),
+                'error_message'    => sanitize_text_field( $error->get_error_message() ),
+                'created_at'       => current_time( 'mysql', true ),
+            )
+        );
+        $this->update_opportunity( $opportunity->id, 'failed' );
+    }
 
 
     /**

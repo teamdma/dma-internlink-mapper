@@ -3,7 +3,7 @@
  * Plugin Name: DMA InternLink Mapper
  * Plugin URI:  https://desertmoroccoadventure.com/files/internal-link-seo-mapper/
  * Description: Internal-link scans, visual maps, SEO reports, local suggestions, broken-link maintenance, and optional Search Console CSV prioritization.
- * Version:     1.0.1
+ * Version:     1.0.0
  * Author:      DMAdventure
  * Author URI:  https://www.desertmoroccoadventure.com/
  * Requires at least: 6.5
@@ -18,8 +18,9 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-ilsm-structural-content.php';
 
-define( 'ILSM_VERSION', '1.0.1' );
-define( 'ILSM_DB_VERSION', '1.10.0' );
+define( 'ILSM_VERSION', '1.0.0' );
+define( 'ILSM_DB_VERSION', '1.0.0' );
+define( 'ILSM_SCHEMA_SIGNATURE', 'ilsm-schema-20260820-a' );
 define( 'ILSM_FILE', __FILE__ );
 define( 'ILSM_PATH', plugin_dir_path( __FILE__ ) );
 define( 'ILSM_URL', plugin_dir_url( __FILE__ ) );
@@ -84,6 +85,7 @@ require_once ILSM_PATH . 'includes/class-ilsm-content-extractor.php';
 require_once ILSM_PATH . 'includes/class-ilsm-rendered-page.php';
 require_once ILSM_PATH . 'includes/class-ilsm-page-seo-analyzer.php';
 require_once ILSM_PATH . 'includes/class-ilsm-on-page-audit.php';
+require_once ILSM_PATH . 'includes/class-ilsm-opportunity-strategy.php';
 require_once ILSM_PATH . 'includes/class-ilsm-local-assistant.php';
 require_once ILSM_PATH . 'includes/class-ilsm-link-opportunities.php';
 require_once ILSM_PATH . 'includes/class-ilsm-link-inserter.php';
@@ -108,21 +110,26 @@ function ilsm_for_each_site( $callback ) {
         return;
     }
 
-    $page = 1;
+    $offset = 0;
     do {
         $site_ids = get_sites(
             array(
-                'fields' => 'ids',
-                'number' => 100,
-                'paged'  => $page,
+                'fields'  => 'ids',
+                'number'  => 100,
+                'offset'  => $offset,
+                'orderby' => 'id',
+                'order'   => 'ASC',
             )
         );
         foreach ( $site_ids as $site_id ) {
             switch_to_blog( $site_id );
-            $callback();
-            restore_current_blog();
+            try {
+                $callback();
+            } finally {
+                restore_current_blog();
+            }
         }
-        $page++;
+        $offset += count( $site_ids );
     } while ( 100 === count( $site_ids ) );
 }
 
@@ -145,8 +152,11 @@ add_action(
             return;
         }
         switch_to_blog( $site->blog_id );
-        ILSM_Activator::activate();
-        restore_current_blog();
+        try {
+            ILSM_Activator::activate();
+        } finally {
+            restore_current_blog();
+        }
     },
     20
 );
