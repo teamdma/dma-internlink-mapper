@@ -22,12 +22,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build production plugin
-        run: |
-          mkdir -p build
-          git archive --format=tar --prefix=dma-internlink-mapper/ HEAD | tar -x -C build
+      - name: Build deterministic production plugin
+        run: bash tools/build-release.sh build
 
       - name: Run WordPress Plugin Check
         uses: wordpress/plugin-check-action@v1
         with:
           build-dir: './build/dma-internlink-mapper'
+
+      - name: Upload verified production package
+        if: success()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dma-internlink-mapper-${{ github.sha }}
+          path: |
+            build/dma-internlink-mapper.zip
+            build/dma-internlink-mapper.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

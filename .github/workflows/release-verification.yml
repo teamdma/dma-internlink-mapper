@@ -1,0 +1,37 @@
+name: Release reproducibility
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Deterministic package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build package twice
+        run: |
+          bash tools/build-release.sh build-first
+          bash tools/build-release.sh build-second
+
+      - name: Verify reproducible ZIP and checksum
+        run: |
+          cmp build-first/dma-internlink-mapper.zip build-second/dma-internlink-mapper.zip
+          cmp build-first/dma-internlink-mapper.zip.sha256 build-second/dma-internlink-mapper.zip.sha256
+
+      - name: Reject development-only files
+        run: |
+          ! unzip -Z1 build-first/dma-internlink-mapper.zip | grep -E '(^|/)(\.git|\.github|tests|tools|vendor|composer\.(json|lock)|phpcs|phpunit)'
