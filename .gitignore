@@ -2,6 +2,7 @@
 /.phpunit.result.cache
 /coverage/
 /build/
+/build-*/
 *.zip
 .DS_Store
 Thumbs.db
