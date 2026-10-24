@@ -1,0 +1,47 @@
+name: Plugin quality checks
+
+on:
+  push:
+    branches:
+      - ci/isolated-plugin-tests
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.1', '8.2', '8.3', '8.4']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer:v2
+          coverage: none
+      - name: Validate composer configuration
+        run: composer validate --no-check-publish
+      - name: Install test dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+      - name: PHP syntax
+        run: composer run lint:php
+      - name: Security invariants
+        run: composer run audit:security
+      - name: Unit tests
+        run: composer run test
+      - name: Security coding standards
+        run: composer run phpcs:security
+      - name: PHP compatibility
+        run: composer run phpcs:compat
